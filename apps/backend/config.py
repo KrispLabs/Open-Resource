@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     upload_dir: str = "uploads"
     frontend_origins: str = "http://localhost:5173,http://localhost:5174,http://localhost:5175"
     featherlessai_api_key: str = ""
+    brightdata_api_key: str = ""
+    brightdata_dataset_id: str = "gd_m794s4jrlq1bvkfnt"  # Bright Data GitHub profiles dataset ID
 
 
 settings = Settings()

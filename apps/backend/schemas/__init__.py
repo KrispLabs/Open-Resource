@@ -8,6 +8,7 @@ from schemas.application import (
     ApplicationResponse, ApplicantApplicationResponse,
     CandidateScoreResponse, ApplicantScoreView, ApplyRequest,
 )
+from schemas.scoring import CloseJobRequest
 
 __all__ = [
     "LoginRequest", "RegisterRequest", "TokenResponse", "UserResponse",
@@ -15,4 +16,5 @@ __all__ = [
     "JobResponse", "JobListResponse", "JDParsedSchema", "ScoringWeightsSchema",
     "ApplicationResponse", "ApplicantApplicationResponse",
     "CandidateScoreResponse", "ApplicantScoreView", "ApplyRequest",
+    "CloseJobRequest",
 ]

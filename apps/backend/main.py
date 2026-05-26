@@ -12,6 +12,7 @@ from models.models import (  # noqa: F401 — import all models so Base.metadata
 from routers.auth import router as auth_router
 from routers.jobs import router as jobs_router
 from routers.applications import router as applications_router
+from routers.scoring import router as scoring_router
 from seed import seed_database
 from config import settings
 
@@ -51,6 +52,7 @@ app.mount("/files", StaticFiles(directory=settings.upload_dir), name="files")
 app.include_router(auth_router)
 app.include_router(jobs_router)
 app.include_router(applications_router)
+app.include_router(scoring_router)
 
 
 @app.get("/health")
