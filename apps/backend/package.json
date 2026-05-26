@@ -1,0 +1,7 @@
+{
+  "name": "backend",
+  "private": true,
+  "scripts": {
+    "dev": "uvicorn main:app --reload --host 127.0.0.1 --port 8000"
+  }
+}

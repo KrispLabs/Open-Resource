@@ -7,6 +7,7 @@ from models.models import (  # noqa: F401 — import all models so Base.metadata
     OutboundCampaign, OutboundCandidate, ScoringConfig, SystemLog,
 )
 from routers.auth import router as auth_router
+from routers.jobs import router as jobs_router
 from seed import seed_database
 from config import settings
 import logging
@@ -40,6 +41,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(jobs_router)
 
 
 @app.get("/health")

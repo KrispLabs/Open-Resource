@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+:root {
+  --color-bg: #111318;
+  --color-surface: #1C1F26;
+  --color-elevated: #23272F;
+  --color-text-primary: #F0F2F5;
+  --color-text-secondary: #9AA0AA;
+  --color-text-muted: #5C6370;
+  --color-primary: #0A66C2;
+  --color-primary-hover: #0958A8;
+  --color-success: #057A55;
+  --color-warning: #B45309;
+  --color-danger: #B91C1C;
+}
+
+[data-theme="light"] {
+  --color-bg: #FFFFFF;
+  --color-surface: #F3F4F6;
+  --color-elevated: #E9EAEC;
+  --color-text-primary: #111318;
+  --color-text-secondary: #4A5568;
+  --color-text-muted: #9AA0AA;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  font-family: 'Plus Jakarta Sans', sans-serif;
+}
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
