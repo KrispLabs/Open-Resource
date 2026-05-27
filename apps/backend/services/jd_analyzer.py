@@ -5,6 +5,7 @@ import httpx
 from sqlalchemy.orm import Session
 from config import settings
 from log_helper import write_log
+from services.provider_manager import provider_manager
 
 
 SYSTEM_PROMPT = """You are an expert technical recruiter and hiring manager.
@@ -50,7 +51,7 @@ async def analyze_jd(
     try:
         messages = [{"role": "user", "content": JD_ANALYSIS_PROMPT + description}]
         headers = {
-            "Authorization": f"Bearer {settings.featherlessai_api_key}",
+            "Authorization": f"Bearer {provider_manager.get('featherless').get('api_key', settings.featherlessai_api_key)}",
             "Content-Type": "application/json",
         }
         payload = {

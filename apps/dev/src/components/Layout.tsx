@@ -1,6 +1,6 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Briefcase, ScrollText, Sliders, BarChart2, LogOut,
+  LayoutDashboard, Briefcase, ScrollText, Sliders, BarChart2, LogOut, Shield,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 import { ThemeToggle } from './ThemeToggle'
@@ -11,6 +11,7 @@ const navItems = [
   { to: '/logs', icon: ScrollText, label: 'System Logs' },
   { to: '/scoring-config', icon: Sliders, label: 'Scoring Config' },
   { to: '/api-usage', icon: BarChart2, label: 'API Usage' },
+  { to: '/admin/providers', icon: Shield, label: 'Providers' },
 ]
 
 const pageTitles: Record<string, string> = {
@@ -19,6 +20,7 @@ const pageTitles: Record<string, string> = {
   '/logs': 'System Logs',
   '/scoring-config': 'Scoring Config',
   '/api-usage': 'API Usage',
+  '/admin/providers': 'Providers',
 }
 
 export function Layout() {

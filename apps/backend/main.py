@@ -9,12 +9,14 @@ from models.models import (  # noqa: F401 — import all models so Base.metadata
     User, Job, Application, CandidateScore,
     OutboundCampaign, OutboundCandidate, ScoringConfig, SystemLog,
 )
+from models.provider_config import ProviderConfig  # noqa: F401 — register with Base.metadata
 from routers.auth import router as auth_router
 from routers.jobs import router as jobs_router
 from routers.applications import router as applications_router
 from routers.scoring import router as scoring_router
 from routers.outbound import router as outbound_router
 from routers.dev import router as dev_router
+from routers.setup import router as setup_router
 from seed import seed_database
 from config import settings
 
@@ -29,6 +31,9 @@ os.makedirs(settings.upload_dir, exist_ok=True)
 async def lifespan(app: FastAPI):
     logger.info("Starting up — creating tables and seeding...")
     Base.metadata.create_all(bind=engine)
+    from services.provider_manager import migrate_env_to_db
+    migrate_env_to_db()
+    logger.info("Provider credentials migrated from env.")
     db = SessionLocal()
     try:
         seed_database(db)
@@ -55,6 +60,7 @@ app.include_router(auth_router)
 app.include_router(jobs_router)
 app.include_router(applications_router)
 app.include_router(scoring_router)
+app.include_router(setup_router, prefix="/api")
 app.include_router(outbound_router, prefix="/api")
 app.include_router(dev_router, prefix="/api")
 

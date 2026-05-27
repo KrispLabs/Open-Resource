@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from config import settings
 from log_helper import write_log
 from services.pdf_parser import extract_text_from_pdf
+from services.provider_manager import provider_manager
 from models.models import Application, CandidateScore
 
 SCORE_SYSTEM_PROMPT = """You are an expert technical recruiter performing structured candidate evaluation.
@@ -111,7 +112,7 @@ async def score_candidate(
     )
 
     headers = {
-        "Authorization": f"Bearer {settings.featherlessai_api_key}",
+        "Authorization": f"Bearer {provider_manager.get('featherless').get('api_key', settings.featherlessai_api_key)}",
         "Content-Type": "application/json",
     }
     payload = {

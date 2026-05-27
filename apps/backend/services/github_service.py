@@ -182,9 +182,11 @@ async def run_outbound_campaign(campaign_id: str) -> None:
 
         jd_parsed = job.jd_parsed or {}
         scoring_weights = job.scoring_weights or {}
-        featherless_api_key = settings.featherlessai_api_key
-        github_token = settings.github_token
-        brightdata_api_key = settings.brightdata_api_key
+
+        from services.provider_manager import provider_manager
+        featherless_api_key = provider_manager.get("featherless").get("api_key", settings.featherlessai_api_key)
+        github_token = provider_manager.get("github").get("token", settings.github_token)
+        brightdata_api_key = provider_manager.get("brightdata").get("api_key", settings.brightdata_api_key)
         use_brightdata = bool(brightdata_api_key)
 
         # Step 1: extract signals

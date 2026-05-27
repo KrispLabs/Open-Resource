@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     brightdata_api_key: str = ""  # Leave empty to fall back to GitHub REST API
     brightdata_dataset_id: str = "gd_m794s4jrlq1bvkfnt"  # Bright Data GitHub profiles dataset ID
     brightdata_serp_dataset_id: str = "gd_l1kikjl71vu9n3bkf"  # Bright Data Google SERP dataset ID
+    server_secret_key: str = "dev-secret-change-in-prod-32chars!"  # AES-256 master key for provider credential encryption
 
 
 settings = Settings()
