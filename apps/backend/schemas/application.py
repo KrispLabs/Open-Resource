@@ -48,6 +48,7 @@ class ApplicationResponse(BaseModel):
     applicant_name: str
     applicant_email: str
     resume_filename: str
+    resume_text: Optional[str] = None
     cover_note: str
     status: str
     rank: Optional[int]
@@ -74,3 +75,9 @@ class ApplyRequest(BaseModel):
     cover_note: str = ""
 
     # validated in endpoint, not here (file comes via multipart)
+
+
+class PatchApplicationRequest(BaseModel):
+    """HR can override verdict and/or status on an application."""
+    verdict: Optional[str] = None   # shortlisted | reviewing | rejected
+    status: Optional[str] = None    # shortlisted | reviewing | rejected | not_shortlisted

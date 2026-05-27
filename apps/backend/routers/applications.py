@@ -2,13 +2,20 @@ import os
 import shutil
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from sqlalchemy import nulls_last, asc
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from database import get_db
 from models.models import Application, Job, User, CandidateScore
-from schemas.application import ApplicationResponse, ApplicantApplicationResponse, ApplicantScoreView
+from schemas.application import (
+    ApplicationResponse,
+    ApplicantApplicationResponse,
+    ApplicantScoreView,
+    PatchApplicationRequest,
+)
 from deps import get_current_user, require_hr
 from config import settings
+from services.pdf_parser import extract_text_from_pdf
 
 router = APIRouter(tags=["applications"])
 
@@ -52,6 +59,7 @@ def _build_hr_response(app: Application, db: Session) -> ApplicationResponse:
         applicant_name=app.applicant.name,
         applicant_email=app.applicant.email,
         resume_filename=app.resume_filename,
+        resume_text=app.resume_text,
         cover_note=app.cover_note,
         status=app.status,
         rank=app.rank,
@@ -124,9 +132,14 @@ async def apply_to_job(
         db.rollback()
         raise HTTPException(status_code=409, detail="You have already applied to this job")
 
-    # Save PDF
+    # Save PDF and extract text
     filename = _save_resume(content, job_id, app.id)
     app.resume_filename = filename
+    try:
+        resume_path = Path(settings.upload_dir) / job_id / f"{app.id}.pdf"
+        app.resume_text = extract_text_from_pdf(resume_path)
+    except Exception:
+        app.resume_text = None
     try:
         db.commit()
     except IntegrityError:
@@ -159,7 +172,7 @@ def list_applications(
     apps = (
         db.query(Application)
         .filter(Application.job_id == job_id)
-        .order_by(Application.submitted_at.desc())
+        .order_by(nulls_last(asc(Application.rank)), Application.submitted_at.asc())
         .all()
     )
     return [_build_hr_response(a, db) for a in apps]
@@ -189,6 +202,52 @@ def get_application(
         return _build_hr_response(app, db)
 
     # dev role — full access
+    return _build_hr_response(app, db)
+
+
+# ── HR: override verdict / status on an application ──────────────────────────
+
+VALID_VERDICTS = {"shortlisted", "reviewing", "rejected"}
+VALID_STATUSES = {"shortlisted", "reviewing", "rejected", "not_shortlisted"}
+
+
+@router.patch("/applications/{application_id}", response_model=ApplicationResponse)
+def patch_application(
+    application_id: str,
+    body: PatchApplicationRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_hr),
+):
+    app = db.query(Application).filter(Application.id == application_id).first()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    job = db.query(Job).filter(Job.id == app.job_id).first()
+    if not job or job.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your job")
+
+    if body.verdict is not None:
+        if body.verdict not in VALID_VERDICTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid verdict. Must be one of: {', '.join(sorted(VALID_VERDICTS))}",
+            )
+        score = db.query(CandidateScore).filter(
+            CandidateScore.application_id == app.id
+        ).first()
+        if score:
+            score.verdict = body.verdict
+
+    if body.status is not None:
+        if body.status not in VALID_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status. Must be one of: {', '.join(sorted(VALID_STATUSES))}",
+            )
+        app.status = body.status
+
+    db.commit()
+    db.refresh(app)
     return _build_hr_response(app, db)
 
 

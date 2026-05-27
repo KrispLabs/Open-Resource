@@ -16,7 +16,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     token = create_access_token(user.id, user.role)
-    return TokenResponse(access_token=token, role=user.role)
+    return TokenResponse(access_token=token, role=user.role, name=user.name, user_id=user.id)
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -25,7 +25,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
     user = create_user(db, body.email, body.name, body.password, role="applicant")
     token = create_access_token(user.id, user.role)
-    return TokenResponse(access_token=token, role=user.role)
+    return TokenResponse(access_token=token, role=user.role, name=user.name, user_id=user.id)
 
 
 @router.get("/me", response_model=UserResponse)

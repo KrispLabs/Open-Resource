@@ -1,17 +1,17 @@
 import asyncio
-import json
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse
+from sqlalchemy import nulls_last, asc
 from sqlalchemy.orm import Session
 
 from database import get_db, SessionLocal
-from models.models import Job, Application, CandidateScore
+from models.models import Job, Application, CandidateScore, User
 from schemas.scoring import CloseJobRequest
 from deps import require_hr, get_current_user
-from models.models import User
 from services.scorer import score_candidate
 from config import settings
+from utils.sse import format_sse
 
 router = APIRouter(tags=["scoring"])
 
@@ -19,11 +19,10 @@ MAX_CONCURRENT = 5  # max parallel AI scoring calls
 
 
 def _sse(event_type: str, payload: dict) -> str:
-    data = json.dumps({"type": event_type, "payload": payload})
-    return f"data: {data}\n\n"
+    return format_sse(event_type, {"type": event_type, "payload": payload})
 
 
-# ── Close job + set shortlist cutoff ─────────────────────────────────────────
+# ── Close job (status only) ───────────────────────────────────────────────────
 
 @router.post("/jobs/{job_id}/close")
 def close_job(
@@ -47,6 +46,25 @@ def close_job(
     db.commit()
     db.refresh(job)
     return {"id": job.id, "status": job.status, "shortlist_cutoff": job.shortlist_cutoff}
+
+
+# ── Trigger scoring (separate from close) ────────────────────────────────────
+
+@router.post("/jobs/{job_id}/score")
+def trigger_scoring(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_hr),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your job")
+    if job.status != "closed":
+        raise HTTPException(status_code=400, detail="Job must be closed before scoring. Call /close first.")
+
+    return {"message": "Scoring started", "job_id": job_id}
 
 
 # ── SSE scoring stream ────────────────────────────────────────────────────────
@@ -235,8 +253,7 @@ def get_rankings(
     applications = (
         db.query(Application)
         .filter(Application.job_id == job_id)
-        .filter(Application.rank.isnot(None))
-        .order_by(Application.rank.asc())
+        .order_by(nulls_last(asc(Application.rank)), Application.submitted_at.asc())
         .all()
     )
 
@@ -246,19 +263,36 @@ def get_rankings(
             CandidateScore.application_id == app.id
         ).first()
         applicant = db.query(User).filter(User.id == app.applicant_id).first()
-        results.append({
+        entry = {
             "application_id": app.id,
             "rank": app.rank,
             "applicant_name": applicant.name if applicant else "Unknown",
             "applicant_email": applicant.email if applicant else "",
+            "resume_filename": app.resume_filename,
+            "cover_note": app.cover_note,
             "status": app.status,
-            "weighted_total": score.weighted_total if score else 0,
-            "verdict": score.verdict if score else "reviewing",
-            "technical_score": score.technical_score if score else 0,
-            "experience_score": score.experience_score if score else 0,
-            "project_score": score.project_score if score else 0,
-            "education_score": score.education_score if score else 0,
-            "communication_score": score.communication_score if score else 0,
-        })
+            "submitted_at": app.submitted_at,
+            "candidate_scores": None,
+        }
+        if score:
+            entry["candidate_scores"] = {
+                "id": score.id,
+                "technical_score": score.technical_score,
+                "experience_score": score.experience_score,
+                "project_score": score.project_score,
+                "education_score": score.education_score,
+                "communication_score": score.communication_score,
+                "weighted_total": score.weighted_total,
+                "verdict": score.verdict,
+                "reasoning": score.reasoning,
+                "strengths": score.strengths,
+                "gaps": score.gaps,
+                "matched_skills": score.matched_skills,
+                "missing_skills": score.missing_skills,
+                "interview_questions": score.interview_questions,
+                "applicant_feedback": score.applicant_feedback,
+                "scored_at": score.scored_at,
+            }
+        results.append(entry)
 
     return results

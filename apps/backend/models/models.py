@@ -66,6 +66,7 @@ class Application(Base):
     job_id = Column(String, ForeignKey("jobs.id"), nullable=False)
     applicant_id = Column(String, ForeignKey("users.id"), nullable=False)
     resume_filename = Column(String, nullable=False)
+    resume_text = Column(Text, nullable=True)
     cover_note = Column(Text, default="")
     status = Column(String, default="pending")  # pending | shortlisted | reviewing | rejected
     rank = Column(Integer, nullable=True)

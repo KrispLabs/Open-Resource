@@ -13,6 +13,8 @@ from routers.auth import router as auth_router
 from routers.jobs import router as jobs_router
 from routers.applications import router as applications_router
 from routers.scoring import router as scoring_router
+from routers.outbound import router as outbound_router
+from routers.dev import router as dev_router
 from seed import seed_database
 from config import settings
 
@@ -53,14 +55,23 @@ app.include_router(auth_router)
 app.include_router(jobs_router)
 app.include_router(applications_router)
 app.include_router(scoring_router)
+app.include_router(outbound_router, prefix="/api")
+app.include_router(dev_router, prefix="/api")
 
 
 @app.get("/health")
 def health():
+    from sqlalchemy import text as _text
     try:
         db = SessionLocal()
-        db.execute(__import__("sqlalchemy").text("SELECT 1"))
+        db.execute(_text("SELECT 1"))
         db.close()
-        return {"status": "ok", "database": "connected"}
-    except Exception as e:
-        return {"status": "error", "database": str(e)}
+        db_ok = True
+    except Exception:
+        db_ok = False
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "db": "connected" if db_ok else "error",
+        "claude": "configured" if settings.featherlessai_api_key else "missing",
+        "github": "configured" if settings.github_token else "missing",
+    }

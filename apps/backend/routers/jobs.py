@@ -26,6 +26,21 @@ def _job_to_list_response(job: Job, db: Session) -> JobListResponse:
     return data
 
 
+# ── HR: list own jobs (explicit alias) ───────────────────────────────────────
+
+@router.get("/hr/jobs", response_model=list[JobListResponse])
+def list_hr_jobs(
+    status: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_hr),
+):
+    q = db.query(Job).filter(Job.created_by == current_user.id)
+    if status:
+        q = q.filter(Job.status == status)
+    jobs = q.order_by(Job.created_at.desc()).all()
+    return [_job_to_list_response(j, db) for j in jobs]
+
+
 # ── List jobs ─────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[JobListResponse])
@@ -86,6 +101,31 @@ def get_job(
     if current_user.role == "applicant" and job.status != "active":
         raise HTTPException(status_code=403, detail="Job is not available")
     return _job_to_response(job, db)
+
+
+# ── Get job weights ───────────────────────────────────────────────────────────
+
+@router.get("/{job_id}/weights")
+def get_job_weights(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_hr),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your job")
+
+    jd_parsed = job.jd_parsed or {}
+    proposed_weights = jd_parsed.get("proposed_weights", {})
+    weight_reasoning = jd_parsed.get("weight_reasoning", "")
+
+    return {
+        "current_weights": job.scoring_weights or {},
+        "proposed_weights": proposed_weights,
+        "weight_reasoning": weight_reasoning,
+    }
 
 
 # ── Update job ─────────────────────────────────────────────────────────────────
