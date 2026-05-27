@@ -187,6 +187,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
         featherless_api_key = provider_manager.get("featherless").get("api_key", settings.featherlessai_api_key)
         github_token = provider_manager.get("github").get("token", settings.github_token)
         brightdata_api_key = provider_manager.get("brightdata").get("api_key", settings.brightdata_api_key)
+        brightdata_serp_zone = provider_manager.get("brightdata").get("serp_zone", settings.brightdata_serp_zone) or "serp_api2"
         use_brightdata = bool(brightdata_api_key)
 
         # Step 1: extract signals
@@ -225,7 +226,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
             for query in search_queries:
                 try:
                     start = time.monotonic()
-                    results = await search_candidates_serp(query, brightdata_api_key)
+                    results = await search_candidates_serp(query, brightdata_api_key, brightdata_serp_zone)
                     latency_ms = int((time.monotonic() - start) * 1000)
                     for user in results:
                         login = user["login"]

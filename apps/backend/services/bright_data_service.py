@@ -14,9 +14,7 @@ import re
 import httpx
 
 BRIGHTDATA_API_BASE = "https://api.brightdata.com"
-SERP_DATASET_ID = "gd_l1kikjl71vu9n3bkf"   # Bright Data Google SERP dataset
 POLL_INTERVAL = 2.0   # seconds between snapshot poll attempts
-SERP_TIMEOUT = 30.0   # max seconds to wait for SERP results
 PROFILE_TIMEOUT = 120.0  # max seconds to wait for profile dataset
 
 
@@ -72,47 +70,61 @@ async def _trigger_and_poll(
     raise TimeoutError(f"Bright Data snapshot {snapshot_id} not ready after {timeout}s")
 
 
-async def search_candidates_serp(query: str, api_key: str) -> list[dict]:
+async def search_candidates_serp(
+    query: str,
+    api_key: str,
+    serp_zone: str = "serp_api2",
+) -> list[dict]:
     """
-    Search for GitHub developer profiles via the Bright Data SERP dataset.
-    Equivalent to search_github_users — returns [{login, avatar_url, html_url}].
+    Search for GitHub developer profiles via the Bright Data Web Access SERP API.
+    Uses the synchronous /request endpoint (no trigger/poll needed).
+    Returns [{login, avatar_url, html_url}].
+    """
+    import json as _json
 
-    Raises ValueError on auth/rate-limit errors.
-    Returns [] on empty results.
-    """
-    serp_query = f"site:github.com {query}"
-    payload = [{"keyword": serp_query, "country": "US", "num_of_results": 10}]
+    search_url = f"https://www.google.com/search?q=site:github.com+{query.replace(' ', '+')}"
+    body = {"zone": serp_zone, "url": search_url, "format": "json"}
 
     try:
-        results = await _trigger_and_poll(api_key, SERP_DATASET_ID, payload, SERP_TIMEOUT)
-    except (TimeoutError, httpx.HTTPStatusError):
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{BRIGHTDATA_API_BASE}/request",
+                headers=_bd_headers(api_key),
+                json=body,
+            )
+            if resp.status_code == 407:
+                raise ValueError(f"Bright Data SERP: zone '{serp_zone}' not found or auth failed")
+            resp.raise_for_status()
+            outer = resp.json()
+
+        # Response: {"status_code": 200, "body": "<json string>"}
+        raw_body = outer.get("body", "{}")
+        inner = _json.loads(raw_body) if isinstance(raw_body, str) else raw_body
+        organic: list[dict] = inner.get("organic", [])
+
+    except (httpx.HTTPStatusError, ValueError, _json.JSONDecodeError):
         return []
 
-    # SERP result shape: {organic: [{link, title, snippet}, ...]}
-    # or flat list of {link, ...} depending on dataset version
     candidates: list[dict] = []
     seen: set[str] = set()
 
-    for record in results:
-        organic = record.get("organic", [record]) if isinstance(record, dict) else []
-        for item in organic:
-            link: str = item.get("link") or item.get("url") or ""
-            # Match github.com/{username} — single path segment (not /username/repo)
-            m = re.match(r"https?://(?:www\.)?github\.com/([^/?#]+)/?$", link)
-            if not m:
-                continue
-            login = m.group(1)
-            # Exclude GitHub's own pages (topics, orgs listing, etc.)
-            if login.lower() in {"features", "topics", "explore", "marketplace", "about", "pricing"}:
-                continue
-            if login in seen:
-                continue
-            seen.add(login)
-            candidates.append({
-                "login": login,
-                "avatar_url": item.get("avatar_url", ""),
-                "html_url": f"https://github.com/{login}",
-            })
+    for item in organic:
+        link: str = item.get("link") or item.get("url") or ""
+        # Match github.com/{username} only — exclude /username/repo paths
+        m = re.match(r"https?://(?:www\.)?github\.com/([^/?#]+)/?$", link)
+        if not m:
+            continue
+        login = m.group(1)
+        if login.lower() in {"features", "topics", "explore", "marketplace", "about", "pricing", "orgs"}:
+            continue
+        if login in seen:
+            continue
+        seen.add(login)
+        candidates.append({
+            "login": login,
+            "avatar_url": "",
+            "html_url": f"https://github.com/{login}",
+        })
 
     return candidates
 

@@ -38,15 +38,15 @@ PROVIDER_REGISTRY: list[dict] = [
         "description": "Web intelligence — Google SERP, GitHub profile dataset, Web Unlocker",
         "fields": [
             {"key": "api_key", "label": "API Key", "type": "secret", "required": True, "default": None},
+            {"key": "serp_zone", "label": "SERP Zone Name", "type": "text", "required": False,
+             "default": "serp_api2"},
             {"key": "dataset_id", "label": "GitHub Dataset ID", "type": "text", "required": False,
              "default": "gd_m794s4jrlq1bvkfnt"},
-            {"key": "serp_dataset_id", "label": "SERP Dataset ID", "type": "text", "required": False,
-             "default": "gd_l1kikjl71vu9n3bkf"},
         ],
         "env_map": {
             "BRIGHTDATA_API_KEY": "api_key",
+            "BRIGHTDATA_SERP_ZONE": "serp_zone",
             "BRIGHTDATA_DATASET_ID": "dataset_id",
-            "BRIGHTDATA_SERP_DATASET_ID": "serp_dataset_id",
         },
     },
     {
