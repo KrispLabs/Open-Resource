@@ -13,6 +13,7 @@ import asyncio
 import logging
 import re
 import httpx
+from urllib.parse import urlencode
 
 _log = logging.getLogger(__name__)
 
@@ -85,13 +86,14 @@ async def search_candidates_serp(
     """
     import json as _json
 
-    search_url = f"https://www.google.com/search?q=site:github.com+{query.replace(' ', '+')}"
+    full_query = f"site:github.com {query}"
+    search_url = "https://www.google.com/search?" + urlencode({"q": full_query})
     body = {"zone": serp_zone, "url": search_url, "format": "json"}
     endpoint = f"{BRIGHTDATA_API_BASE}/request"
 
     _log.info(
-        "[brightdata_serp] REQUEST endpoint=%s zone=%s search_url=%s payload_keys=%s",
-        endpoint, serp_zone, search_url, list(body.keys()),
+        "[brightdata_serp] REQUEST raw_query=%r encoded_url=%s zone=%s",
+        query, search_url, serp_zone,
     )
 
     try:
@@ -129,14 +131,18 @@ async def search_candidates_serp(
     candidates: list[dict] = []
     seen: set[str] = set()
 
+    _log.info("[brightdata_serp] PARSED organic_results=%d", len(organic))
+
     for item in organic:
         link: str = item.get("link") or item.get("url") or ""
         # Match github.com/{username} only — exclude /username/repo paths
         m = re.match(r"https?://(?:www\.)?github\.com/([^/?#]+)/?$", link)
         if not m:
+            _log.debug("[brightdata_serp] skipping non-profile link=%r", link)
             continue
         login = m.group(1)
         if login.lower() in {"features", "topics", "explore", "marketplace", "about", "pricing", "orgs"}:
+            _log.debug("[brightdata_serp] skipping reserved username=%r", login)
             continue
         if login in seen:
             continue
@@ -147,6 +153,10 @@ async def search_candidates_serp(
             "html_url": f"https://github.com/{login}",
         })
 
+    _log.info(
+        "[brightdata_serp] EXTRACTED profiles=%d logins=%s",
+        len(candidates), [c["login"] for c in candidates],
+    )
     return candidates
 
 

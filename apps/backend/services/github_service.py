@@ -383,6 +383,8 @@ async def run_outbound_campaign(campaign_id: str) -> None:
                         error_message=str(exc),
                     )
 
+        _log.info("[outbound] users_found_total=%d logins=%s", len(all_users), list(all_users.keys()))
+
         if not all_users:
             campaign.status = "complete"
             campaign.completed_at = datetime.now(timezone.utc)
@@ -401,6 +403,10 @@ async def run_outbound_campaign(campaign_id: str) -> None:
                 settings.brightdata_dataset_id,
             )
             latency_ms = int((time.monotonic() - start) * 1000)
+            _log.info(
+                "[outbound] brightdata_profiles requested=%d returned=%d",
+                len(all_users), len(profiles),
+            )
             write_log(
                 db,
                 event_type="github_profile_fetch",
