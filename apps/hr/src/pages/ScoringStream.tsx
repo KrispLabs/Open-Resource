@@ -45,6 +45,18 @@ export default function ScoringStream() {
     let cancelled = false
 
     async function triggerScoring() {
+      // Wait 500ms before calling POST /score. The backend's POST /close
+      // auto-starts a scoring background task; this gap lets that task register
+      // first so both don't race each other. The backend deduplicates concurrent
+      // scoring sessions by job, so even if both fire the user-visible effect is
+      // a single stream — but the delay prevents an unnecessary second task from
+      // being created at all.
+      await new Promise<void>((resolve) => {
+        const tid = setTimeout(resolve, 500)
+        ctrl.signal.addEventListener('abort', () => { clearTimeout(tid); resolve() })
+      })
+      if (cancelled || ctrl.signal.aborted) return
+
       try {
         await api.post(`/jobs/${id}/score`, undefined, { signal: ctrl.signal })
         if (!cancelled) setInitState('streaming')

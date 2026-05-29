@@ -6,7 +6,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import get_db
-from models.models import Job, Application, CandidateScore, User
+from models.models import Job, Application, CandidateScore, User, OutboundCampaign, OutboundCandidate
 from schemas.job import (
     JobCreateRequest, JobUpdateRequest, WeightsUpdateRequest,
     JobResponse, JobListResponse,
@@ -391,3 +391,59 @@ def move_to_interviewing(
     db.commit()
     db.refresh(job)
     return _job_to_response(job, db)
+
+
+# ── Delete job (hard delete, all related data) ────────────────────────────────
+
+@router.delete("/{job_id}", status_code=204)
+def delete_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_hr),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your job")
+
+    from models.models import SystemLog
+
+    # Step 1 — NULL-out all SystemLog FK references for this job up front
+    # (SystemLog references jobs, applications, AND campaigns; FK is nullable)
+    db.query(SystemLog).filter(SystemLog.job_id == job_id).update(
+        {"job_id": None, "application_id": None}, synchronize_session=False
+    )
+
+    # Step 2 — outbound candidates → campaigns (plus any campaign-only logs)
+    campaign_ids = [
+        r[0] for r in
+        db.query(OutboundCampaign.id).filter(OutboundCampaign.job_id == job_id).all()
+    ]
+    if campaign_ids:
+        db.query(OutboundCandidate).filter(
+            OutboundCandidate.campaign_id.in_(campaign_ids)
+        ).delete(synchronize_session=False)
+        db.query(SystemLog).filter(
+            SystemLog.campaign_id.in_(campaign_ids)
+        ).update({"campaign_id": None}, synchronize_session=False)
+        db.query(OutboundCampaign).filter(
+            OutboundCampaign.job_id == job_id
+        ).delete(synchronize_session=False)
+
+    # Step 3 — candidate scores → applications
+    app_ids = [
+        r[0] for r in
+        db.query(Application.id).filter(Application.job_id == job_id).all()
+    ]
+    if app_ids:
+        db.query(CandidateScore).filter(
+            CandidateScore.application_id.in_(app_ids)
+        ).delete(synchronize_session=False)
+        db.query(Application).filter(
+            Application.job_id == job_id
+        ).delete(synchronize_session=False)
+
+    # Step 4 — the job itself (bulk SQL; avoids ORM cascade conflicts)
+    db.query(Job).filter(Job.id == job_id).delete(synchronize_session=False)
+    db.commit()

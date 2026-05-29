@@ -1,4 +1,5 @@
-import type { Job, Application } from '@open-resource/shared'
+import type { Job } from '@open-resource/shared'
+import type { ApplicantApplication } from './types'
 
 export const mockJobs: Job[] = [
   {
@@ -86,20 +87,17 @@ export const mockJobs: Job[] = [
   },
 ]
 
-export const mockApplications: Application[] = [
+export const mockApplications: ApplicantApplication[] = [
   {
     id: 'app-1',
     job_id: 'job-2',
-    applicant_id: 'user-me',
-    applicant_name: 'Demo Applicant',
+    job_title: 'Backend Python Engineer',
     resume_filename: 'resume.pdf',
     cover_note: 'I am very excited about this opportunity.',
     status: 'shortlisted',
     rank: 2,
     submitted_at: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString(),
-    candidate_scores: {
-      id: 'score-1',
-      application_id: 'app-1',
+    scores: {
       technical_score: 88,
       experience_score: 82,
       project_score: 91,
@@ -107,27 +105,19 @@ export const mockApplications: Application[] = [
       communication_score: 79,
       weighted_total: 86,
       verdict: 'shortlisted',
-      reasoning: 'Strong technical background.',
-      strengths: ['Python expertise', 'FastAPI experience'],
-      gaps: ['No Kubernetes experience'],
-      matched_skills: ['Python', 'FastAPI', 'PostgreSQL'],
-      missing_skills: ['Kubernetes'],
-      interview_questions: ['Describe your experience with async Python.'],
       applicant_feedback:
         'Your application demonstrates strong technical skills, particularly in Python and API development. Your project portfolio shows relevant experience building production-grade systems. Consider deepening your knowledge of container orchestration to strengthen future applications.',
-      scored_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
     },
   },
   {
     id: 'app-2',
     job_id: 'job-1',
-    applicant_id: 'user-me',
-    applicant_name: 'Demo Applicant',
+    job_title: 'Senior Frontend Engineer',
     resume_filename: 'resume.pdf',
     cover_note: 'I love frontend engineering.',
     status: 'reviewing',
     rank: null,
     submitted_at: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
-    candidate_scores: null,
+    scores: null,
   },
 ]

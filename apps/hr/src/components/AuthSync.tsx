@@ -3,12 +3,15 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/auth'
 
 export function AuthSync() {
-  const logout = useAuthStore((s) => s.logout)
+  // Use clearSession (local-only) here — NEVER logout(). Reacting to an expiry
+  // or a cross-tab logout must not re-broadcast, or two AuthSync channels would
+  // ping-pong logout messages and storm the main thread into a tab crash.
+  const clearSession = useAuthStore((s) => s.clearSession)
   const navigate = useNavigate()
 
   useEffect(() => {
     const handleExpired = () => {
-      logout()
+      clearSession()
       navigate('/login', { replace: true })
     }
 
@@ -19,7 +22,7 @@ export function AuthSync() {
       channel = new BroadcastChannel('or_auth')
       channel.onmessage = (e) => {
         if (e.data?.type === 'logout') {
-          logout()
+          clearSession()
           navigate('/login', { replace: true })
         }
       }
@@ -31,7 +34,7 @@ export function AuthSync() {
       window.removeEventListener('or:session-expired', handleExpired as EventListener)
       channel?.close()
     }
-  }, [logout, navigate])
+  }, [clearSession, navigate])
 
   return null
 }

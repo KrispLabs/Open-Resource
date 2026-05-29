@@ -98,13 +98,13 @@ function ProviderBadge({ provider }: { provider: string }) {
 }
 
 export default function DevDashboard() {
-  const { data: stats, isLoading: statsLoading } = useQuery<DevStats>({
+  const { data: stats, isLoading: statsLoading, isError: statsError } = useQuery<DevStats>({
     queryKey: ['dev-stats'],
     queryFn: () => api.get('/api/dev/stats').then(r => r.data),
     refetchInterval: 30000,
   })
 
-  const { data: logsData, isLoading: logsLoading } = useQuery<LogsResponse>({
+  const { data: logsData, isLoading: logsLoading, isError: logsError } = useQuery<LogsResponse>({
     queryKey: ['dev-logs-recent'],
     queryFn: () => api.get('/api/dev/logs?limit=10').then(r => r.data),
     refetchInterval: 10000,
@@ -117,6 +117,10 @@ export default function DevDashboard() {
       {/* Stat cards */}
       {statsLoading ? (
         <SkeletonStatCards count={6} />
+      ) : statsError ? (
+        <div style={{ padding: '16px', fontSize: '13px', color: 'var(--color-danger)', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-default)' }}>
+          Failed to load system stats. Backend may be unreachable.
+        </div>
       ) : (
         <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(6, 1fr)' }}>
           {STAT_CARDS.map(({ key, label, unit, variant }) => (
@@ -150,6 +154,10 @@ export default function DevDashboard() {
               {Array.from({ length: 5 }).map((_, i) => (
                 <div key={i} className="skeleton" style={{ height: '32px', width: '100%' }} />
               ))}
+            </div>
+          ) : logsError ? (
+            <div style={{ padding: '24px', textAlign: 'center', fontSize: '13px', color: 'var(--color-danger)' }}>
+              Failed to load logs. Backend may be unreachable.
             </div>
           ) : logs.length === 0 ? (
             <div style={{ padding: '32px 24px', textAlign: 'center', fontSize: '13px', color: 'var(--text-muted)' }}>

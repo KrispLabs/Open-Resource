@@ -1,20 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Briefcase, Users, Clock, CheckCircle } from 'lucide-react'
+import type { Job } from '@open-resource/shared'
 import { api } from '../api/client'
 import { SkeletonStatCards } from '../components/Skeleton'
 import { EmptyState } from '../components/Skeleton'
 import { VerdictBadge } from '../components/Atoms'
-
-interface Job {
-  id: string
-  title: string
-  status: string
-  location: string
-  job_type: string
-  created_at: string
-  application_count: number
-}
 
 export default function Dashboard() {
   const navigate = useNavigate()

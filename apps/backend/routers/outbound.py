@@ -57,15 +57,16 @@ async def create_campaign(
             ),
         )
 
-    # Pre-flight: need at least one GitHub sourcing provider
+    # Pre-flight: a GitHub PAT is required for profile enrichment (Bright Data Dataset API
+    # replaced — enrichment always runs through the GitHub REST API now). Bright Data remains
+    # optional: it only enhances candidate discovery via SERP.
     github_token = provider_manager.get("github").get("token") or _settings.github_token
-    brightdata_key = provider_manager.get("brightdata").get("api_key") or _settings.brightdata_api_key
-    if not github_token and not brightdata_key:
+    if not github_token:
         raise HTTPException(
             status_code=503,
             detail=(
-                "No GitHub sourcing provider configured — cannot launch campaign. "
-                "Set GITHUB_TOKEN or BRIGHTDATA_API_KEY in your .env and restart."
+                "GitHub Personal Access Token required for profile enrichment — cannot launch campaign. "
+                "Set GITHUB_TOKEN in your .env and restart, or configure it via the Dev portal."
             ),
         )
 
@@ -156,6 +157,8 @@ def get_campaign(
     campaign = db.query(OutboundCampaign).filter(OutboundCampaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your campaign")
     return campaign
 
 
@@ -173,6 +176,8 @@ def get_campaign_candidates(
     campaign = db.query(OutboundCampaign).filter(OutboundCampaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your campaign")
 
     candidates = (
         db.query(OutboundCandidate)
@@ -194,6 +199,8 @@ def send_all_outreach(
     campaign = db.query(OutboundCampaign).filter(OutboundCampaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your campaign")
 
     now = datetime.now(timezone.utc)
     candidates = (

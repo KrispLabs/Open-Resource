@@ -5,6 +5,7 @@ import re
 import httpx
 from pathlib import Path
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from config import settings
 from log_helper import write_log
@@ -175,24 +176,43 @@ async def score_candidate(
         tokens_used=tokens_used,
     )
 
-    score = CandidateScore(
-        application_id=application.id,
-        technical_score=parsed.get("technical_score", 0),
-        experience_score=parsed.get("experience_score", 0),
-        project_score=parsed.get("project_score", 0),
-        education_score=parsed.get("education_score", 0),
-        communication_score=parsed.get("communication_score", 0),
-        weighted_total=weighted_total,
-        verdict=verdict,
-        reasoning=parsed.get("reasoning", ""),
-        strengths=parsed.get("strengths", []),
-        gaps=parsed.get("gaps", []),
-        matched_skills=parsed.get("matched_skills", []),
-        missing_skills=parsed.get("missing_skills", []),
-        interview_questions=parsed.get("interview_questions", []),
-        applicant_feedback=parsed.get("applicant_feedback", ""),
-    )
-    db.add(score)
-    db.commit()
+    # Upsert: application_id is UNIQUE. A re-run, or a race between the background
+    # task and the SSE stream, must update the existing row rather than insert a
+    # duplicate (which would raise IntegrityError and poison the session).
+    score = db.query(CandidateScore).filter(
+        CandidateScore.application_id == application.id
+    ).first()
+    is_new = score is None
+    if is_new:
+        score = CandidateScore(application_id=application.id)
+
+    score.technical_score = parsed.get("technical_score", 0)
+    score.experience_score = parsed.get("experience_score", 0)
+    score.project_score = parsed.get("project_score", 0)
+    score.education_score = parsed.get("education_score", 0)
+    score.communication_score = parsed.get("communication_score", 0)
+    score.weighted_total = weighted_total
+    score.verdict = verdict
+    score.reasoning = parsed.get("reasoning", "")
+    score.strengths = parsed.get("strengths", [])
+    score.gaps = parsed.get("gaps", [])
+    score.matched_skills = parsed.get("matched_skills", [])
+    score.missing_skills = parsed.get("missing_skills", [])
+    score.interview_questions = parsed.get("interview_questions", [])
+    score.applicant_feedback = parsed.get("applicant_feedback", "")
+
+    if is_new:
+        db.add(score)
+    try:
+        db.commit()
+    except IntegrityError:
+        # A concurrent writer inserted the row first — fall back to its version.
+        db.rollback()
+        score = db.query(CandidateScore).filter(
+            CandidateScore.application_id == application.id
+        ).first()
+        if score is None:
+            raise
+        return score
     db.refresh(score)
     return score

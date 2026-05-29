@@ -58,8 +58,17 @@ export default function ApplicationDetail() {
   const { data: application, isLoading, isError } = useApplication(id)
   const { data: job } = useJob(application?.job_id)
 
-  const scores = application?.candidate_scores
-  const isClosed = job?.status === 'closed' || (application?.rank !== null)
+  // Use `scores` (the field the backend actually returns for applicants).
+  const scores = application?.scores
+
+  // Bug 1 fix: treat any post-close job status as "closed" for result visibility.
+  // HR may advance the job to 'sourcing', 'interviewing', or 'hired' after scoring —
+  // we must show results in those states too. `rank !== null` is the most reliable
+  // signal that scoring has completed regardless of current job status.
+  const isClosed =
+    application?.rank !== null ||
+    ['closed', 'sourcing', 'interviewing', 'hired'].includes(job?.status ?? '')
+
   const hasResults = isClosed && scores !== null && scores !== undefined
 
   if (isLoading) {
@@ -104,7 +113,7 @@ export default function ApplicationDetail() {
       {/* Job name header */}
       <div style={{ marginBottom: 24 }}>
         <h1 className="page-title">
-          {job?.title ?? `Application #${application.id.slice(-6)}`}
+          {application.job_title || job?.title || `Application #${application.id.slice(-6)}`}
         </h1>
         <p className="page-subtitle">
           Submitted{' '}

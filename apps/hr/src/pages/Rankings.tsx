@@ -61,10 +61,14 @@ export default function Rankings() {
     status: Application['status'],
     verdict: Verdict
   ) => {
+    // Find the specific candidate being changed by appId, not by selectedCandidate.
+    // selectedCandidate reflects the currently open slide-over, which may differ
+    // from the candidate whose verdict is being updated (e.g. during rapid changes).
+    const target = candidates.find((c) => c.id === appId)
     updateCandidate(appId, {
       status,
-      ...(selectedCandidate?.candidate_scores && {
-        candidate_scores: { ...selectedCandidate.candidate_scores, verdict },
+      ...(target?.candidate_scores && {
+        candidate_scores: { ...target.candidate_scores, verdict },
       }),
     })
     // Invalidate so Shortlist and any sibling view of this job's applications

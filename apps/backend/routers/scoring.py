@@ -1,6 +1,7 @@
 import asyncio
+import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import nulls_last, asc
 from sqlalchemy.orm import Session
@@ -14,20 +15,104 @@ from config import settings
 from utils.sse import format_sse
 
 router = APIRouter(tags=["scoring"])
+_log = logging.getLogger(__name__)
 
 MAX_CONCURRENT = 5  # max parallel AI scoring calls
 _SSE_KEEPALIVE_INTERVAL = 25.0   # seconds between SSE comment pings
 _SSE_STEP_THRESHOLD = 3          # emit "Still processing..." after this many keepalives with no progress
+
+_scoring_tasks: set[asyncio.Task] = set()
 
 
 def _sse(event_type: str, payload: dict) -> str:
     return format_sse(event_type, {"type": event_type, "payload": payload})
 
 
-# ── Close job (status only) ───────────────────────────────────────────────────
+# ── Background scoring task ───────────────────────────────────────────────────
+
+async def _run_scoring_background(job_id: str) -> None:
+    """
+    Score all applications for a just-closed job.
+    Runs in a background asyncio task so /close returns immediately.
+    Shortlists based on the AI verdict (weighted_total >= 70 → shortlisted,
+    <= 45 → rejected, otherwise reviewing) — no rank cutoff required.
+    """
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            return
+        applications = db.query(Application).filter(Application.job_id == job_id).all()
+        if not applications:
+            return
+
+        # Capture job primitives before fanning out — concurrent tasks must not
+        # share the request/parent session (SQLAlchemy Sessions are not safe for
+        # concurrent use; interleaved commits corrupt each other's unit of work).
+        job_description = job.description
+        job_title = job.title
+        scoring_weights = job.scoring_weights or {}
+        app_ids = [a.id for a in applications]
+
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
+        async def _score_one(app_id: str) -> None:
+            async with semaphore:
+                # Each task owns an isolated session for its full lifecycle.
+                task_db = SessionLocal()
+                try:
+                    if task_db.query(CandidateScore).filter(
+                        CandidateScore.application_id == app_id
+                    ).first():
+                        return  # already scored (e.g. SSE stream opened simultaneously)
+                    app = task_db.query(Application).filter(Application.id == app_id).first()
+                    if not app:
+                        return
+                    await score_candidate(
+                        application=app,
+                        job_description=job_description,
+                        job_title=job_title,
+                        scoring_weights=scoring_weights,
+                        upload_dir=settings.upload_dir,
+                        db=task_db,
+                    )
+                except Exception as exc:
+                    _log.warning(
+                        "[bg_scoring] job=%s app=%s failed: %s", job_id, app_id, exc
+                    )
+                finally:
+                    task_db.close()
+
+        await asyncio.gather(*[_score_one(aid) for aid in app_ids], return_exceptions=True)
+
+        # Assign ranks and shortlist purely by AI verdict — no cutoff needed
+        scored_apps = (
+            db.query(Application)
+            .join(CandidateScore, Application.id == CandidateScore.application_id)
+            .filter(Application.job_id == job_id)
+            .order_by(CandidateScore.weighted_total.desc())
+            .all()
+        )
+        for rank, app in enumerate(scored_apps, start=1):
+            app.rank = rank
+            score_row = db.query(CandidateScore).filter(
+                CandidateScore.application_id == app.id
+            ).first()
+            if score_row:
+                app.status = score_row.verdict  # shortlisted / reviewing / rejected
+        db.commit()
+        _log.info("[bg_scoring] job=%s done: %d ranked", job_id, len(scored_apps))
+
+    except Exception as exc:
+        _log.error("[bg_scoring] job=%s error: %s", job_id, exc)
+    finally:
+        db.close()
+
+
+# ── Close job + auto-start scoring ───────────────────────────────────────────
 
 @router.post("/jobs/{job_id}/close")
-def close_job(
+async def close_job(
     job_id: str,
     body: CloseJobRequest,
     db: Session = Depends(get_db),
@@ -43,17 +128,30 @@ def close_job(
 
     job.status = "closed"
     job.closed_at = datetime.now(timezone.utc)
-    if body.shortlist_cutoff is not None:
-        job.shortlist_cutoff = body.shortlist_cutoff
     db.commit()
     db.refresh(job)
-    return {"id": job.id, "status": job.status, "shortlist_cutoff": job.shortlist_cutoff}
+
+    # AI scoring is NEVER auto-started. Closing applications and running scoring
+    # are two distinct, manually-triggered recruiter actions (the platform assists,
+    # it does not decide). HR explicitly starts scoring via POST /jobs/{id}/score
+    # or by opening the scoring stream. We only report whether scoring *can* run.
+    from services.provider_manager import provider_manager
+    featherless_key = (
+        provider_manager.get("featherless").get("api_key") or settings.featherlessai_api_key
+    )
+    scoring_status = "ready_to_score" if featherless_key else "scoring_pending_api_key"
+
+    return {
+        "id": job.id,
+        "status": job.status,
+        "scoring_status": scoring_status,
+    }
 
 
-# ── Trigger scoring (separate from close) ────────────────────────────────────
+# ── Manual re-score trigger (still useful for re-running) ────────────────────
 
 @router.post("/jobs/{job_id}/score")
-def trigger_scoring(
+async def trigger_scoring(
     job_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_hr),
@@ -68,9 +166,6 @@ def trigger_scoring(
     if job.status not in ("closed", "sourcing", "interviewing"):
         raise HTTPException(status_code=400, detail="Job must be closed before scoring. Call /close first.")
 
-    # Pre-flight: Featherless key must be present or every candidate will score 0
-    # with a silent error. Return 503 here so the HR portal shows a clear message
-    # instead of a completed stream with all-zero scores.
     from services.provider_manager import provider_manager
     from config import settings as _settings
     featherless_key = provider_manager.get("featherless").get("api_key") or _settings.featherlessai_api_key
@@ -84,6 +179,22 @@ def trigger_scoring(
             ),
         )
 
+    # Clear stale scores so the re-run sees fresh candidates (not leftover 0.0 failures)
+    app_ids = [
+        a.id for a in db.query(Application).filter(Application.job_id == job_id).all()
+    ]
+    if app_ids:
+        db.query(CandidateScore).filter(
+            CandidateScore.application_id.in_(app_ids)
+        ).delete(synchronize_session=False)
+        db.query(Application).filter(
+            Application.id.in_(app_ids)
+        ).update({"rank": None, "status": "pending"}, synchronize_session=False)
+        db.commit()
+
+    task = asyncio.create_task(_run_scoring_background(job_id))
+    _scoring_tasks.add(task)
+    task.add_done_callback(_scoring_tasks.discard)
     return {"message": "Scoring started", "job_id": job_id}
 
 
@@ -115,6 +226,13 @@ async def scoring_stream(
         .all()
     )
 
+    # Capture primitives while the request session is alive — the generator runs
+    # after this function returns (when the request-scoped `db` may be closed) and
+    # concurrent tasks must never share a single session.
+    job_description = job.description
+    job_title = job.title
+    job_weights = job.scoring_weights or {}
+
     async def event_stream():
         # Use a fresh DB session for the async generator (can't share sessions across async context)
         async_db = SessionLocal()
@@ -132,35 +250,79 @@ async def scoring_stream(
             semaphore = asyncio.Semaphore(MAX_CONCURRENT)
             queue: asyncio.Queue = asyncio.Queue()
 
-            async def score_and_enqueue(app: Application, index: int):
-                async with semaphore:
-                    if await request.is_disconnected():
-                        return
-                    applicant = applicants_by_id.get(app.applicant_id)
-                    name = applicant.name if applicant else "Candidate"
-                    await queue.put(("candidate_start", name, index, None))
-                    try:
-                        score = await score_candidate(
-                            application=app,
-                            job_description=job.description,
-                            job_title=job.title,
-                            scoring_weights=job.scoring_weights or {},
-                            upload_dir=settings.upload_dir,
-                            db=async_db,
-                        )
-                        await queue.put(("candidate_done", name, index, score))
-                    except Exception as exc:
-                        await queue.put(("candidate_error", name, index, str(exc)))
-
             # Preload applicant names to avoid N+1 inside concurrent tasks
             applicant_ids = [app.applicant_id for app in applications]
             applicants_by_id = {
-                u.id: u for u in async_db.query(User).filter(User.id.in_(applicant_ids)).all()
+                u.id: u.name for u in async_db.query(User).filter(User.id.in_(applicant_ids)).all()
             }
+            name_by_app = {
+                app.applicant_id: applicants_by_id.get(app.applicant_id, "Candidate")
+                for app in applications
+            }
+            # (app_id, applicant_name) pairs — only primitives cross into the tasks.
+            app_meta = [
+                (app.id, name_by_app.get(app.applicant_id, "Candidate"))
+                for app in applications
+            ]
+
+            async def score_and_enqueue(app_id: str, name: str, index: int):
+                async with semaphore:
+                    if await request.is_disconnected():
+                        return
+                    await queue.put(("candidate_start", name, index, None))
+
+                    # Isolated session per task — never share async_db across
+                    # concurrent coroutines. Only plain dicts go on the queue so
+                    # the consumer never touches a detached/closed-session object.
+                    task_db = SessionLocal()
+                    try:
+                        existing = task_db.query(CandidateScore).filter(
+                            CandidateScore.application_id == app_id
+                        ).first()
+                        if existing:
+                            await queue.put((
+                                "candidate_done", name, index,
+                                {"weighted_total": existing.weighted_total, "verdict": existing.verdict},
+                            ))
+                            return
+
+                        app = task_db.query(Application).filter(
+                            Application.id == app_id
+                        ).first()
+                        if not app:
+                            await queue.put(("candidate_error", name, index, "Application not found"))
+                            return
+
+                        score = await score_candidate(
+                            application=app,
+                            job_description=job_description,
+                            job_title=job_title,
+                            scoring_weights=job_weights,
+                            upload_dir=settings.upload_dir,
+                            db=task_db,
+                        )
+                        await queue.put((
+                            "candidate_done", name, index,
+                            {"weighted_total": score.weighted_total, "verdict": score.verdict},
+                        ))
+                    except Exception as exc:
+                        # Race: background task may have just finished — use its score
+                        fallback = task_db.query(CandidateScore).filter(
+                            CandidateScore.application_id == app_id
+                        ).first()
+                        if fallback:
+                            await queue.put((
+                                "candidate_done", name, index,
+                                {"weighted_total": fallback.weighted_total, "verdict": fallback.verdict},
+                            ))
+                        else:
+                            await queue.put(("candidate_error", name, index, str(exc)))
+                    finally:
+                        task_db.close()
 
             tasks = [
-                asyncio.create_task(score_and_enqueue(app, i + 1))
-                for i, app in enumerate(applications)
+                asyncio.create_task(score_and_enqueue(aid, name, i + 1))
+                for i, (aid, name) in enumerate(app_meta)
             ]
 
             completed = 0
@@ -188,11 +350,10 @@ async def scoring_stream(
                 if event_type == "candidate_start":
                     yield _sse("candidate_start", {"name": name, "index": index})
                 elif event_type == "candidate_done":
-                    score = payload
                     yield _sse("candidate_done", {
                         "name": name,
-                        "score": score.weighted_total,
-                        "verdict": score.verdict,
+                        "score": payload["weighted_total"],
+                        "verdict": payload["verdict"],
                         "index": index,
                     })
                     completed += 1
@@ -208,7 +369,7 @@ async def scoring_stream(
 
             await asyncio.gather(*tasks, return_exceptions=True)
 
-            # After all scored: assign ranks + apply shortlist_cutoff
+            # After all scored: assign ranks + shortlist by AI verdict (no cutoff needed)
             yield _sse("step", {"text": "Finalising rankings and shortlist..."})
 
             scored_apps = (
@@ -218,9 +379,6 @@ async def scoring_stream(
                 .order_by(CandidateScore.weighted_total.desc())
                 .all()
             )
-
-            job_row = async_db.query(Job).filter(Job.id == job_id).first()
-            cutoff = job_row.shortlist_cutoff if job_row else None
 
             shortlisted_count = 0
             reviewing_count = 0
@@ -232,19 +390,13 @@ async def scoring_stream(
                     CandidateScore.application_id == app.id
                 ).first()
                 if score_row:
-                    if cutoff and rank <= cutoff:
-                        app.status = "shortlisted"
-                        score_row.verdict = "shortlisted"
+                    app.status = score_row.verdict  # shortlisted / reviewing / rejected
+                    if score_row.verdict == "shortlisted":
                         shortlisted_count += 1
                     elif score_row.verdict == "reviewing":
-                        app.status = "reviewing"
                         reviewing_count += 1
                     else:
-                        app.status = score_row.verdict
-                        if score_row.verdict == "rejected":
-                            rejected_count += 1
-                        else:
-                            shortlisted_count += 1
+                        rejected_count += 1
 
             async_db.commit()
 

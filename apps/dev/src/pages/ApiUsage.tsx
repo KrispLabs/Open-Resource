@@ -196,7 +196,7 @@ function BarChart({ data }: { data: DayUsage[] }) {
 }
 
 export default function ApiUsage() {
-  const { data, isLoading } = useQuery<DayUsage[]>({
+  const { data, isLoading, isError } = useQuery<DayUsage[]>({
     queryKey: ['dev-api-usage'],
     queryFn: () => api.get('/api/dev/api-usage').then(r => r.data),
   })
@@ -206,6 +206,16 @@ export default function ApiUsage() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
         <SkeletonStatCards count={3} />
         <div className="skeleton" style={{ height: '260px', width: '100%' }} />
+      </div>
+    )
+  }
+
+  if (isError) {
+    return (
+      <div className="table-wrap">
+        <div style={{ padding: '32px 24px', textAlign: 'center', fontSize: '13px', color: 'var(--color-danger)' }}>
+          Failed to load usage data. Backend may be unreachable.
+        </div>
       </div>
     )
   }

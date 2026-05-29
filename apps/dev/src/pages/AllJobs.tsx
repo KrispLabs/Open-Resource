@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, Fragment } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { api } from '../api/client'
@@ -71,7 +71,7 @@ function WeightsBreakdown({ weights }: { weights: ScoringWeights }) {
 export default function AllJobs() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
-  const { data, isLoading } = useQuery<DevJob[]>({
+  const { data, isLoading, isError } = useQuery<DevJob[]>({
     queryKey: ['dev-jobs'],
     queryFn: () => api.get('/api/dev/jobs').then(r => r.data),
   })
@@ -101,6 +101,12 @@ export default function AllJobs() {
         <tbody>
           {isLoading ? (
             <SkeletonTableRows rows={5} />
+          ) : isError ? (
+            <tr>
+              <td colSpan={7} style={{ padding: '32px 24px', textAlign: 'center', fontSize: '13px', color: 'var(--color-danger)' }}>
+                Failed to load jobs. Check your connection and try again.
+              </td>
+            </tr>
           ) : jobs.length === 0 ? (
             <tr>
               <td colSpan={7} style={{ padding: 0 }}>
@@ -113,9 +119,8 @@ export default function AllJobs() {
             </tr>
           ) : (
             jobs.map(job => (
-              <>
+              <Fragment key={job.id}>
                 <tr
-                  key={job.id}
                   style={{
                     borderBottom: expandedId === job.id ? 'none' : undefined,
                     cursor: 'pointer',
@@ -150,7 +155,6 @@ export default function AllJobs() {
                 </tr>
                 {expandedId === job.id && (
                   <tr
-                    key={`${job.id}-weights`}
                     style={{ backgroundColor: 'var(--bg-hover)' }}
                   >
                     <td colSpan={7} style={{ padding: '12px 24px' }}>
@@ -161,7 +165,7 @@ export default function AllJobs() {
                     </td>
                   </tr>
                 )}
-              </>
+              </Fragment>
             ))
           )}
         </tbody>

@@ -1,21 +1,33 @@
 from pathlib import Path
 import fitz  # pymupdf
 
+_UNREADABLE_FALLBACK = (
+    "[Resume could not be parsed: the uploaded file is empty, corrupted, or image-only "
+    "with no selectable text. Score this candidate conservatively — award minimal points "
+    "across all categories and note in the feedback that the resume was unreadable.]"
+)
+
 
 def extract_text_from_pdf(filepath: str | Path) -> str:
-    """Extract all text from a PDF file. Raises ValueError if no text found (image-only PDF)."""
+    """
+    Extract text from a PDF file.
+
+    If the PDF is empty, corrupted, or image-only (no selectable text), returns a
+    fallback string instead of raising so the AI scorer can still produce output
+    (with appropriately low scores) rather than failing the candidate entirely.
+
+    Raises FileNotFoundError only if the file does not exist.
+    """
     path = Path(filepath)
     if not path.exists():
         raise FileNotFoundError(f"Resume file not found: {filepath}")
 
-    doc = fitz.open(str(path))
-    text_parts = []
-    for page in doc:
-        text_parts.append(page.get_text())
-    doc.close()
+    try:
+        doc = fitz.open(str(path))
+        text_parts = [page.get_text() for page in doc]
+        doc.close()
+    except Exception:
+        return _UNREADABLE_FALLBACK
 
     full_text = "\n".join(text_parts).strip()
-    if not full_text:
-        raise ValueError("Resume appears to be image-only or contains no extractable text")
-
-    return full_text
+    return full_text if full_text else _UNREADABLE_FALLBACK

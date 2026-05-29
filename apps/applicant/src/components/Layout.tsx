@@ -91,7 +91,7 @@ export function Layout() {
         </aside>
 
         {/* Main content */}
-        <main className="main-content" style={{ overflowY: 'auto', paddingBottom: 72 }}>
+        <main className="main-content" style={{ overflowY: 'auto' }}>
           <Outlet />
         </main>
       </div>
