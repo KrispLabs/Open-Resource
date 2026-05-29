@@ -942,8 +942,24 @@ tr.row-selected td:first-child {
   border-top: 1px solid var(--border-subtle);
 }
 
-.deadline--urgent { color: var(--color-warning); font-size: 11px; font-weight: 500; }
-.deadline--ok     { color: var(--text-muted); font-size: 11px; }
+.deadline--urgent {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--color-warning-dim);
+  color: var(--color-warning);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.deadline--ok {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--color-success-dim);
+  color: var(--color-success);
+}
 
 /* ─────────────────────────────────────────
    APPLICANT RESULT VIEW
@@ -1251,6 +1267,10 @@ tr.row-selected td:first-child {
 /* ─────────────────────────────────────────
    MOBILE — Applicant Portal only
 ───────────────────────────────────────── */
+
+/* Hidden by default; only shown on mobile via media query below */
+.applicant-bottom-nav { display: none; }
+
 @media (max-width: 640px) {
   .applicant-bottom-nav {
     position: fixed;

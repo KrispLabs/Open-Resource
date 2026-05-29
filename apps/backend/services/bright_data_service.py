@@ -10,8 +10,12 @@ If BRIGHTDATA_API_KEY is empty the pipeline falls back to GitHub REST; these
 functions are never called in that case.
 """
 import asyncio
+import logging
 import re
 import httpx
+from urllib.parse import urlencode
+
+_log = logging.getLogger(__name__)
 
 BRIGHTDATA_API_BASE = "https://api.brightdata.com"
 POLL_INTERVAL = 2.0   # seconds between snapshot poll attempts
@@ -70,6 +74,35 @@ async def _trigger_and_poll(
     raise TimeoutError(f"Bright Data snapshot {snapshot_id} not ready after {timeout}s")
 
 
+def _github_query_to_google(query: str) -> str:
+    """
+    Convert GitHub search API syntax to plain terms for Google.
+
+    GitHub search syntax (language:python, stars:>50) is meaningless to Google.
+    Strip filter operators, keep plain terms, add "developer" to bias toward
+    profile pages over documentation or marketing sites.
+
+    Examples:
+      "language:python fastapi stars:>50"  →  "python fastapi developer"
+      "language:go kubernetes followers:>100"  →  "go kubernetes developer"
+    """
+    terms: list[str] = []
+    skip_keys = {"stars", "followers", "repos", "pushed", "created", "size", "topic"}
+    for part in query.split():
+        if ":" in part:
+            key, val = part.split(":", 1)
+            if key.lower() in skip_keys:
+                continue
+            clean = val.lstrip("><!=").strip()
+            if clean:
+                terms.append(clean)
+        else:
+            terms.append(part)
+    if terms:
+        terms.append("developer")
+    return " ".join(terms)
+
+
 async def search_candidates_serp(
     query: str,
     api_key: str,
@@ -82,16 +115,33 @@ async def search_candidates_serp(
     """
     import json as _json
 
-    search_url = f"https://www.google.com/search?q=site:github.com+{query.replace(' ', '+')}"
+    google_terms = _github_query_to_google(query)
+    full_query = f"site:github.com {google_terms}"
+    search_url = "https://www.google.com/search?" + urlencode({"q": full_query})
     body = {"zone": serp_zone, "url": search_url, "format": "json"}
+    endpoint = f"{BRIGHTDATA_API_BASE}/request"
+
+    _log.info(
+        "[brightdata_serp] REQUEST raw_query=%r encoded_url=%s zone=%s",
+        query, search_url, serp_zone,
+    )
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
-                f"{BRIGHTDATA_API_BASE}/request",
+                endpoint,
                 headers=_bd_headers(api_key),
                 json=body,
             )
+
+            # Capture full diagnostic info before raise_for_status discards the body
+            _log.info(
+                "[brightdata_serp] RESPONSE status=%d headers=%s body_preview=%r",
+                resp.status_code,
+                dict(resp.headers),
+                resp.text[:2000],
+            )
+
             if resp.status_code == 407:
                 raise ValueError(f"Bright Data SERP: zone '{serp_zone}' not found or auth failed")
             resp.raise_for_status()
@@ -111,14 +161,33 @@ async def search_candidates_serp(
     candidates: list[dict] = []
     seen: set[str] = set()
 
+    _log.info("[brightdata_serp] PARSED organic_results=%d", len(organic))
+
+    _RESERVED = {
+        "features", "topics", "explore", "marketplace", "about",
+        "pricing", "orgs", "login", "signup", "blog", "enterprise",
+        "settings", "notifications", "pulls", "issues", "search",
+        "sponsors", "trending", "contact", "security", "site",
+    }
+
     for item in organic:
         link: str = item.get("link") or item.get("url") or ""
-        # Match github.com/{username} only — exclude /username/repo paths
-        m = re.match(r"https?://(?:www\.)?github\.com/([^/?#]+)/?$", link)
-        if not m:
+        # Match github.com/{username} (profile page)
+        m_profile = re.match(r"https?://(?:www\.)?github\.com/([^/?#]+)/?$", link)
+        # Match github.com/{owner}/{repo} (repo page) — extract the owner
+        m_repo = re.match(r"https?://(?:www\.)?github\.com/([^/?#]+)/[^/?#]+/?$", link)
+
+        if m_profile:
+            login = m_profile.group(1)
+        elif m_repo:
+            login = m_repo.group(1)
+            _log.debug("[brightdata_serp] extracted owner from repo link=%r login=%r", link, login)
+        else:
+            _log.debug("[brightdata_serp] skipping non-github link=%r", link)
             continue
-        login = m.group(1)
-        if login.lower() in {"features", "topics", "explore", "marketplace", "about", "pricing", "orgs"}:
+
+        if login.lower() in _RESERVED:
+            _log.debug("[brightdata_serp] skipping reserved username=%r", login)
             continue
         if login in seen:
             continue
@@ -129,6 +198,10 @@ async def search_candidates_serp(
             "html_url": f"https://github.com/{login}",
         })
 
+    _log.info(
+        "[brightdata_serp] EXTRACTED profiles=%d logins=%s",
+        len(candidates), [c["login"] for c in candidates],
+    )
     return candidates
 
 

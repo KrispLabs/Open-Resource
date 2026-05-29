@@ -11,6 +11,7 @@ __pycache__/
 venv/
 .venv/
 env/
+.pytest_cache/
 
 # Build outputs
 dist/
@@ -21,6 +22,9 @@ build/
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
+*.db-journal
 
 # Uploads
 apps/backend/uploads/*
@@ -44,3 +48,14 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Generated diagnostic reports (never commit AI-generated debugging artifacts)
+*_ROOT_CAUSE.md
+*_RUNTIME_TRACE.md
+*_PROVIDER_AUDIT.md
+*_FIXES.md
+*_VALIDATION.md
+DIAGNOSTIC_REPORT.md
+FIX_PLAN.md
+SUMMARY.md
+FILE_CHANGES.md

@@ -71,8 +71,8 @@ def _build_hr_response(app: Application, db: Session) -> ApplicationResponse:
 def _build_applicant_response(app: Application, db: Session) -> ApplicantApplicationResponse:
     job = db.query(Job).filter(Job.id == app.job_id).first()
     scores = None
-    # Only reveal scores after job is closed
-    if job and job.status == "closed":
+    # Reveal scores once the job has closed (stays visible through all post-close statuses)
+    if job and job.status in ("closed", "sourcing", "interviewing", "hired"):
         score = db.query(CandidateScore).filter(
             CandidateScore.application_id == app.id
         ).first()

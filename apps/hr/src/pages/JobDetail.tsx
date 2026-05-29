@@ -14,6 +14,8 @@ import {
   Archive,
   RotateCcw,
   UserCheck,
+  RefreshCw,
+  Trash2,
 } from 'lucide-react'
 import type { Job, Application } from '@open-resource/shared'
 import { api } from '../api/client'
@@ -55,10 +57,6 @@ export default function JobDetail() {
 
   const [closing, setClosing] = useState(false)
   const [closeError, setCloseError] = useState<string | null>(null)
-  const [showCutoffPrompt, setShowCutoffPrompt] = useState(false)
-  const [cutoff, setCutoff] = useState('')
-  const [cutoffError, setCutoffError] = useState<string | null>(null)
-  const [settingCutoff, setSettingCutoff] = useState(false)
 
   const [archiving, setArchiving] = useState(false)
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false)
@@ -71,6 +69,8 @@ export default function JobDetail() {
   const [showReopenConfirm, setShowReopenConfirm] = useState(false)
   const [resetScoring, setResetScoring] = useState(false)
   const [movingToInterview, setMovingToInterview] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const { data: job, isLoading: jobLoading } = useQuery<Job>({
     queryKey: ['job', id],
@@ -85,52 +85,26 @@ export default function JobDetail() {
   })
 
   const handleCloseApplications = async () => {
-    console.group('[JobDetail] closeJob')
-    console.log('job.status before close:', job?.status, '| id:', id)
     setClosing(true)
     setCloseError(null)
     try {
-      const res = await api.post(`/jobs/${id}/close`, {})
-      console.log('[JobDetail] close → success', res.data)
+      await api.post(`/jobs/${id}/close`, {})
       queryClient.invalidateQueries({ queryKey: ['job', id] })
       queryClient.invalidateQueries({ queryKey: ['jobs'] })
-      console.log('[JobDetail] invalidateQueries dispatched')
-      setShowCutoffPrompt(true)
+      // Scoring starts automatically in the background — open stream to watch
+      navigate(`/jobs/${id}/scoring`)
     } catch (err: unknown) {
-      console.error('[JobDetail] close → error', err)
       const msg = extractErrorMsg(err, 'Failed to close job')
       setCloseError(msg)
       showToast(msg, 'error')
     } finally {
       setClosing(false)
-      console.groupEnd()
     }
   }
 
-  const handleCutoffSubmit = async () => {
-    const n = parseInt(cutoff, 10)
-    if (isNaN(n) || n < 1) {
-      setCutoffError('Enter a valid number (e.g. 10)')
-      return
-    }
-    console.group('[JobDetail] setCutoff + startScoring')
-    console.log('cutoff:', n, '| job.status:', job?.status)
-    setSettingCutoff(true)
-    setCutoffError(null)
-    try {
-      const res = await api.patch(`/jobs/${id}`, { shortlist_cutoff: n })
-      console.log('[JobDetail] patch shortlist_cutoff → success', res.data)
-      queryClient.invalidateQueries({ queryKey: ['job', id] })
-      console.log('[JobDetail] navigating to scoring stream')
-      navigate(`/jobs/${id}/scoring`)
-    } catch (err: unknown) {
-      console.error('[JobDetail] patch shortlist_cutoff → error', err)
-      const msg = extractErrorMsg(err, 'Failed to set cutoff')
-      setCutoffError(msg)
-    } finally {
-      setSettingCutoff(false)
-      console.groupEnd()
-    }
+  const handleRerunScoring = () => {
+    // ScoringStream mounts and calls POST /score itself — no duplicate trigger needed
+    navigate(`/jobs/${id}/scoring`)
   }
 
   const handleArchive = async () => {
@@ -187,6 +161,21 @@ export default function JobDetail() {
     }
   }
 
+  const handleDelete = async () => {
+    setDeleting(true)
+    try {
+      await api.delete(`/jobs/${id}`)
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
+      showToast('Job deleted.', 'success')
+      navigate('/jobs')
+    } catch (err: unknown) {
+      showToast(extractErrorMsg(err, 'Failed to delete job'), 'error')
+    } finally {
+      setDeleting(false)
+      setShowDeleteConfirm(false)
+    }
+  }
+
   const handleMoveToInterviewing = async () => {
     setMovingToInterview(true)
     try {
@@ -204,11 +193,7 @@ export default function JobDetail() {
   const safeApplications = Array.isArray(applications) ? applications : []
   const scoringDone =
     safeApplications.length > 0 && safeApplications.some((a) => a.candidate_scores !== null)
-
-  console.log(
-    '[JobDetail] render | status=%s scoring_done=%s apps=%d cutoff_prompt=%s',
-    job?.status, scoringDone, safeApplications.length, showCutoffPrompt,
-  )
+  const canRerunScoring = ['closed', 'sourcing', 'interviewing'].includes(job?.status ?? '')
 
   if (jobLoading) {
     return (
@@ -241,6 +226,7 @@ export default function JobDetail() {
   const canMarkHired = ['closed', 'sourcing', 'interviewing'].includes(job.status)
   const canArchive = !['active', 'archived'].includes(job.status)
   const canReopen = job.status === 'archived' || job.status === 'hired'
+  const canDelete = ['draft', 'archived'].includes(job.status)
 
   // Source from GitHub is accessible for closed/sourcing/interviewing
   const showSourceGitHub =
@@ -357,6 +343,29 @@ export default function JobDetail() {
             >
               <BarChart2 size={14} />
               View Rankings
+            </button>
+          )}
+          {canRerunScoring && (
+            <button
+              onClick={handleRerunScoring}
+              style={{
+                padding: '7px 16px',
+                borderRadius: '6px',
+                fontSize: '13px',
+                fontWeight: 600,
+                color: 'var(--color-text-secondary)',
+                backgroundColor: 'transparent',
+                border: '1px solid var(--color-elevated)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'var(--color-elevated)')}
+              onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
+            >
+              <RefreshCw size={13} />
+              Re-run Scoring
             </button>
           )}
           {canMoveToInterviewing && (
@@ -481,6 +490,29 @@ export default function JobDetail() {
             >
               <RotateCcw size={13} />
               Reopen
+            </button>
+          )}
+          {canDelete && (
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              style={{
+                padding: '7px 16px',
+                borderRadius: '6px',
+                fontSize: '13px',
+                fontWeight: 600,
+                color: 'var(--color-danger)',
+                backgroundColor: 'transparent',
+                border: '1px solid var(--color-danger)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'var(--color-danger-dim)')}
+              onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
+            >
+              <Trash2 size={13} />
+              Delete
             </button>
           )}
         </div>
@@ -804,78 +836,61 @@ export default function JobDetail() {
         </div>
       )}
 
-      {/* Shortlist cutoff prompt */}
-      {showCutoffPrompt && (
+      {/* Delete confirm dialog */}
+      {showDeleteConfirm && (
         <div
           style={{
             marginBottom: '20px',
             padding: '16px',
             borderRadius: '8px',
-            border: '1px solid var(--color-primary)',
-            backgroundColor: 'var(--color-primary-dim)',
+            border: '1px solid var(--color-danger)',
+            backgroundColor: 'var(--color-danger-dim)',
           }}
         >
-          <div
-            style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: '8px' }}
-          >
-            Set shortlist cutoff rank
+          <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: '6px' }}>
+            Permanently delete this job?
           </div>
-          <p style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '10px' }}>
-            Candidates ranked at or above this number will be automatically shortlisted.
+          <p style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '12px' }}>
+            This will permanently remove the job listing, all applications, scores, rankings, and campaign data. This cannot be undone.
           </p>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <input
-              type="number"
-              min={1}
-              placeholder="e.g. 10"
-              value={cutoff}
-              onChange={(e) => setCutoff(e.target.value)}
-              style={{
-                width: '80px',
-                padding: '6px 10px',
-                borderRadius: '6px',
-                border: '1px solid var(--color-elevated)',
-                backgroundColor: 'var(--color-surface)',
-                color: 'var(--color-text-primary)',
-                fontSize: '13px',
-                outline: 'none',
-              }}
-            />
+          <div style={{ display: 'flex', gap: '8px' }}>
             <button
-              onClick={handleCutoffSubmit}
-              disabled={settingCutoff}
+              onClick={() => setShowDeleteConfirm(false)}
               style={{
-                padding: '6px 16px',
+                padding: '6px 14px',
+                borderRadius: '6px',
+                fontSize: '13px',
+                fontWeight: 600,
+                color: 'var(--color-text-secondary)',
+                backgroundColor: 'transparent',
+                border: '1px solid var(--color-elevated)',
+                cursor: 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              style={{
+                padding: '6px 14px',
                 borderRadius: '6px',
                 fontSize: '13px',
                 fontWeight: 600,
                 color: '#fff',
-                backgroundColor: 'var(--color-primary)',
+                backgroundColor: 'var(--color-danger)',
                 border: 'none',
-                cursor: settingCutoff ? 'not-allowed' : 'pointer',
-                opacity: settingCutoff ? 0.6 : 1,
+                cursor: deleting ? 'not-allowed' : 'pointer',
+                opacity: deleting ? 0.6 : 1,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
               }}
             >
-              {settingCutoff ? 'Saving…' : 'Start Scoring'}
-            </button>
-            <button
-              onClick={() => navigate(`/jobs/${id}/scoring`)}
-              style={{
-                fontSize: '13px',
-                color: 'var(--color-text-muted)',
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-              }}
-            >
-              Skip
+              {deleting && <Loader2 size={12} className="animate-spin" />}
+              {deleting ? 'Deleting…' : 'Delete Permanently'}
             </button>
           </div>
-          {cutoffError && (
-            <p style={{ marginTop: '6px', fontSize: '12px', color: 'var(--color-danger)' }}>
-              {cutoffError}
-            </p>
-          )}
         </div>
       )}
 

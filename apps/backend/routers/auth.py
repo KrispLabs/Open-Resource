@@ -4,6 +4,7 @@ from time import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from database import get_db
 from schemas.auth import LoginRequest, RegisterRequest, TokenResponse
@@ -47,7 +48,13 @@ def register(body: RegisterRequest, request: Request, db: Session = Depends(get_
     _check_rate_limit(request.client.host if request.client else "unknown")
     if get_user_by_email(db, body.email):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
-    user = create_user(db, body.email, body.name, body.password, role="applicant")
+    try:
+        user = create_user(db, body.email, body.name, body.password, role="applicant")
+    except IntegrityError:
+        # Race: a concurrent request inserted the same email between the check
+        # above and our commit. The unique constraint is the source of truth.
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
     token = create_access_token(user.id, user.role)
     return TokenResponse(access_token=token, role=user.role, name=user.name, user_id=user.id)
 

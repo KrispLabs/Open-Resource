@@ -51,7 +51,7 @@ export default function Campaigns() {
           color: 'var(--color-danger)',
         }}
       >
-        Failed to load campaigns. Please refresh.
+        Failed to load campaigns. Please refresh or sign in again if your session has expired.
       </div>
     )
   }

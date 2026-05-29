@@ -1,9 +1,12 @@
+import json
+import logging
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import get_db
-from models.models import Job, Application, CandidateScore, User
+from models.models import Job, Application, CandidateScore, User, OutboundCampaign, OutboundCandidate
 from schemas.job import (
     JobCreateRequest, JobUpdateRequest, WeightsUpdateRequest,
     JobResponse, JobListResponse,
@@ -11,6 +14,10 @@ from schemas.job import (
 )
 from deps import get_current_user, get_optional_user, require_hr
 from services.jd_analyzer import analyze_jd
+from services.provider_manager import provider_manager
+from config import settings
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -164,10 +171,58 @@ async def analyze_job(
     if job.created_by != current_user.id:
         raise HTTPException(status_code=403, detail="Not your job")
 
+    # Pre-flight: confirm Featherless is configured before entering the AI pipeline
+    featherless_key = (
+        provider_manager.get("featherless").get("api_key")
+        or settings.featherlessai_api_key
+    )
+    if not featherless_key:
+        _log.error(
+            "JD analyze called for job %s but FEATHERLESSAI_API_KEY is not configured",
+            job_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "AI provider not configured — set FEATHERLESSAI_API_KEY in .env and restart, "
+                "or configure via the Dev portal (Settings → Providers)."
+            ),
+        )
+
     try:
         parsed = await analyze_jd(db, job.id, job.description, current_user.id)
+    except httpx.TimeoutException:
+        _log.error("JD analysis timeout for job %s", job_id)
+        raise HTTPException(
+            status_code=504,
+            detail="AI provider timed out (60 s limit). Check your Featherless quota and retry.",
+        )
+    except httpx.HTTPStatusError as exc:
+        _log.error(
+            "JD analysis HTTP error for job %s: status=%d body=%r",
+            job_id, exc.response.status_code, exc.response.text[:300],
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"AI provider returned HTTP {exc.response.status_code}: "
+                f"{exc.response.text[:300]}"
+            ),
+        )
+    except json.JSONDecodeError as exc:
+        _log.error("JD analysis JSON parse error for job %s: %s", job_id, exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI response was not valid JSON: {exc}",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}")
+        _log.exception("Unexpected error during JD analysis for job %s", job_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI analysis failed ({type(exc).__name__}): {exc}",
+        )
 
     job.jd_parsed = parsed
     # Pre-fill scoring_weights from AI proposal
@@ -336,3 +391,59 @@ def move_to_interviewing(
     db.commit()
     db.refresh(job)
     return _job_to_response(job, db)
+
+
+# ── Delete job (hard delete, all related data) ────────────────────────────────
+
+@router.delete("/{job_id}", status_code=204)
+def delete_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_hr),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your job")
+
+    from models.models import SystemLog
+
+    # Step 1 — NULL-out all SystemLog FK references for this job up front
+    # (SystemLog references jobs, applications, AND campaigns; FK is nullable)
+    db.query(SystemLog).filter(SystemLog.job_id == job_id).update(
+        {"job_id": None, "application_id": None}, synchronize_session=False
+    )
+
+    # Step 2 — outbound candidates → campaigns (plus any campaign-only logs)
+    campaign_ids = [
+        r[0] for r in
+        db.query(OutboundCampaign.id).filter(OutboundCampaign.job_id == job_id).all()
+    ]
+    if campaign_ids:
+        db.query(OutboundCandidate).filter(
+            OutboundCandidate.campaign_id.in_(campaign_ids)
+        ).delete(synchronize_session=False)
+        db.query(SystemLog).filter(
+            SystemLog.campaign_id.in_(campaign_ids)
+        ).update({"campaign_id": None}, synchronize_session=False)
+        db.query(OutboundCampaign).filter(
+            OutboundCampaign.job_id == job_id
+        ).delete(synchronize_session=False)
+
+    # Step 3 — candidate scores → applications
+    app_ids = [
+        r[0] for r in
+        db.query(Application.id).filter(Application.job_id == job_id).all()
+    ]
+    if app_ids:
+        db.query(CandidateScore).filter(
+            CandidateScore.application_id.in_(app_ids)
+        ).delete(synchronize_session=False)
+        db.query(Application).filter(
+            Application.job_id == job_id
+        ).delete(synchronize_session=False)
+
+    # Step 4 — the job itself (bulk SQL; avoids ORM cascade conflicts)
+    db.query(Job).filter(Job.id == job_id).delete(synchronize_session=False)
+    db.commit()

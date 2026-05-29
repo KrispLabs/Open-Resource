@@ -264,18 +264,32 @@ class ProviderManager:
         self._cache_valid.discard(provider_id)
 
     def is_configured(self, provider_id: str) -> bool:
+        """
+        Returns True only when the DB row exists AND all required secret fields
+        are present in the decrypted config.  A row with only model/non-secret
+        defaults (but no api_key) returns False so re-migration can fill the gap.
+        """
         db = self._open_db()
         try:
             from models.provider_config import ProviderConfig
             row = db.query(ProviderConfig).filter_by(provider_id=provider_id).first()
-            return bool(
-                row and row.encrypted_config
-                and row.status not in ("unconfigured", "decrypt_failed")
-            )
+            if not row or not row.encrypted_config or row.status in ("unconfigured", "decrypt_failed"):
+                return False
         except Exception:
             return False
         finally:
             db.close()
+
+        # Row exists — also verify every required secret field is present
+        provider_def = next((p for p in PROVIDER_REGISTRY if p["id"] == provider_id), None)
+        if not provider_def:
+            return True  # Unknown provider — assume OK
+        config = self.get(provider_id)
+        for field in provider_def["fields"]:
+            if field.get("required") and field["type"] == "secret":
+                if not config.get(field["key"]):
+                    return False
+        return True
 
     def list(self) -> list[dict]:
         """Return all registered providers with their current status. Never returns secrets."""
@@ -292,12 +306,23 @@ class ProviderManager:
         for p in PROVIDER_REGISTRY:
             pid = p["id"]
             row = rows.get(pid)
+
+            # Row existing is not sufficient — required secret fields must be present
+            row_exists = bool(row and row.encrypted_config and row.status not in ("unconfigured", "decrypt_failed"))
+            if row_exists:
+                config = self.get(pid)
+                for field in p["fields"]:
+                    if field.get("required") and field["type"] == "secret":
+                        if not config.get(field["key"]):
+                            row_exists = False
+                            break
+
             result.append({
                 "id": pid,
                 "name": p["name"],
                 "required": p["required"],
                 "description": p.get("description", ""),
-                "configured": bool(row and row.encrypted_config and row.status != "unconfigured"),
+                "configured": row_exists,
                 "status": row.status if row else "unconfigured",
                 "health": row.health if row else None,
                 "fields": p["fields"],
@@ -416,11 +441,12 @@ def migrate_env_to_db() -> None:
                 for mk in missing
             )
             if not can_fill:
+                env_vars_needed = [k for k, fk in p.get("env_map", {}).items() if fk in missing]
                 logger.warning(
-                    "Provider '%s' is configured in DB but missing required field(s) %s. "
-                    "Set %s in your .env and restart to activate.",
-                    pid, missing,
-                    [k for k, fk in p.get("env_map", {}).items() if fk in missing],
+                    "Provider '%s' requires field(s) %s but they are absent from the environment. "
+                    "Set %s in your .env and restart to activate, "
+                    "or configure via POST /api/providers/configure.",
+                    pid, missing, env_vars_needed,
                 )
                 continue
             logger.info(
@@ -433,18 +459,28 @@ def migrate_env_to_db() -> None:
 
 def check_required_providers() -> None:
     """
-    Log actionable warnings for any required provider missing its credentials.
+    Log actionable errors for any required provider that is not fully configured.
     Call after migrate_env_to_db() at startup.
+    Catches both 'never configured' and 'configured row exists but api_key absent'.
     """
     for p in PROVIDER_REGISTRY:
         if not p.get("required"):
             continue
+        if provider_manager.is_configured(p["id"]):
+            continue  # all required fields present — OK
         missing = _missing_required_fields(p)
+        env_vars = [k for k, fk in p.get("env_map", {}).items() if fk in missing]
         if missing:
-            env_vars = [k for k, fk in p.get("env_map", {}).items() if fk in missing]
             logger.error(
-                "REQUIRED provider '%s' is missing field(s) %s. "
-                "AI features WILL FAIL until you set %s in your .env and restart. "
-                "Or configure via POST /api/providers/configure.",
-                p["name"], missing, env_vars,
+                "REQUIRED provider '%s' is missing field(s) %s in stored credentials. "
+                "AI features WILL FAIL. "
+                "Set %s in your .env and restart (auto-migrates), "
+                "or rotate via POST /api/providers/%s/rotate.",
+                p["name"], missing, env_vars, p["id"],
+            )
+        else:
+            logger.error(
+                "REQUIRED provider '%s' is not configured. "
+                "AI features WILL FAIL. Configure via POST /api/providers/configure.",
+                p["name"],
             )

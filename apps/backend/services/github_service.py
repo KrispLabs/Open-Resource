@@ -4,12 +4,15 @@ Uses httpx for async HTTP calls — same pattern as jd_analyzer.py.
 """
 import asyncio
 import json
+import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import httpx
 from config import settings
 from log_helper import write_log
+
+_log = logging.getLogger(__name__)
 
 GITHUB_API_BASE = "https://api.github.com"
 FEATHERLESS_API_BASE = "https://api.featherless.ai/v1/chat/completions"
@@ -29,6 +32,26 @@ SIGNALS_USER_TEMPLATE = (
     "'language:python fastapi stars:>50'). "
     "jd_parsed: {jd_parsed}"
 )
+
+
+def _bg_write_log(**kwargs) -> None:
+    """
+    Write a SystemLog on its OWN short-lived session.
+
+    Used from inside concurrent asyncio tasks (profile fetch / profile scoring),
+    where calling write_log() on the campaign's shared session would interleave
+    commits from multiple coroutines on a single SQLAlchemy Session — which is
+    not safe and corrupts each other's unit of work. Failures here are swallowed:
+    a logging hiccup must never abort a sourcing campaign.
+    """
+    from database import SessionLocal
+    s = SessionLocal()
+    try:
+        write_log(s, **kwargs)
+    except Exception:
+        s.rollback()
+    finally:
+        s.close()
 
 
 def _github_headers(github_token: str) -> dict:
@@ -65,11 +88,43 @@ async def extract_github_signals(jd_parsed: dict, featherless_api_key: str) -> d
     data = resp.json()
     content = data["choices"][0]["message"]["content"].strip()
 
-    # Strip markdown code fences if present
-    content = re.sub(r"^```(?:json)?\s*", "", content)
-    content = re.sub(r"\s*```$", "", content)
+    _log.info("[outbound_signals] raw_response_len=%d", len(content))
 
-    return json.loads(content)
+    # Strip markdown code fences (multiline-safe, same as jd_analyzer._extract_json)
+    content = re.sub(r"^```(?:json)?\s*\n?", "", content, flags=re.MULTILINE)
+    content = re.sub(r"\n?```\s*$", "", content, flags=re.MULTILINE)
+    content = content.strip()
+
+    # Try direct parse (happy path — clean JSON response)
+    try:
+        result = json.loads(content)
+        _log.info("[outbound_signals] direct_parse=success keys=%s", list(result.keys()))
+        return result
+    except json.JSONDecodeError:
+        _log.warning("[outbound_signals] direct_parse=failed trying brace-extraction fallback")
+
+    # Fallback: first { to last } — handles trailing prose after the JSON block
+    start = content.find("{")
+    end = content.rfind("}")
+    if start != -1 and end != -1 and start < end:
+        try:
+            result = json.loads(content[start : end + 1])
+            _log.info(
+                "[outbound_signals] fallback_parse=success keys=%s",
+                list(result.keys()),
+            )
+            return result
+        except json.JSONDecodeError:
+            _log.error(
+                "[outbound_signals] fallback_parse=failed content_preview=%r",
+                content[:300],
+            )
+
+    raise json.JSONDecodeError(
+        f"Could not extract valid JSON from signals response. Preview: {content[:300]!r}",
+        content,
+        0,
+    )
 
 
 async def search_github_users(query: str, github_token: str) -> list[dict]:
@@ -160,6 +215,174 @@ async def fetch_github_profile(username: str, github_token: str) -> dict | None:
     }
 
 
+def _build_profile(username: str, user_data: dict, repos_data: list, recent_days: int) -> dict:
+    """
+    Map GitHub REST /users + /users/{u}/repos payloads into the existing ProfileSchema dict.
+    Output shape is a superset of fetch_github_profile() — same keys plus the additive
+    `total_stars` and `recent_activity` fields. The scorer reads only the shared keys.
+    """
+    languages_seen: list[str] = []
+    total_stars = 0
+    most_recent_push: datetime | None = None
+
+    for repo in repos_data:
+        total_stars += repo.get("stargazers_count", 0) or 0
+        lang = repo.get("language")
+        if lang and lang not in languages_seen:
+            languages_seen.append(lang)
+        pushed = repo.get("pushed_at")
+        if pushed:
+            try:
+                pushed_dt = datetime.fromisoformat(pushed.replace("Z", "+00:00"))
+                if most_recent_push is None or pushed_dt > most_recent_push:
+                    most_recent_push = pushed_dt
+            except (ValueError, AttributeError):
+                pass
+
+    # notable repos: top 5 by stars (mirror fetch_github_profile's shape exactly)
+    sorted_repos = sorted(
+        repos_data, key=lambda r: r.get("stargazers_count", 0) or 0, reverse=True
+    )
+    notable_repos = [
+        {
+            "name": r.get("name", ""),
+            "stars": r.get("stargazers_count", 0) or 0,
+            "description": r.get("description", "") or "",
+            "language": r.get("language", "") or "",
+        }
+        for r in sorted_repos[:5]
+    ]
+
+    recent_activity = False
+    if most_recent_push is not None:
+        recent_activity = (datetime.now(timezone.utc) - most_recent_push) <= timedelta(days=recent_days)
+
+    return {
+        "login": user_data.get("login", username),
+        "name": user_data.get("name"),
+        "bio": user_data.get("bio"),
+        "location": user_data.get("location"),
+        "followers": user_data.get("followers", 0),
+        "public_repos": user_data.get("public_repos", 0),
+        "avatar_url": user_data.get("avatar_url", ""),
+        "html_url": user_data.get("html_url", f"https://github.com/{username}"),
+        "top_languages": languages_seen[:5],
+        "notable_repos": notable_repos,
+        "total_stars": total_stars,
+        "recent_activity": recent_activity,
+    }
+
+
+async def fetch_profiles_pat(
+    usernames: list[str],
+    github_token: str,
+    max_concurrency: int = 5,
+    max_retries: int = 2,
+) -> list[dict]:
+    """
+    Batch-enrich GitHub usernames into the existing ProfileSchema via the GitHub REST API.
+
+    Drop-in replacement for the broken Bright Data fetch_profiles_dataset(): emits the same
+    dict shape as fetch_github_profile() (plus additive total_stars / recent_activity).
+
+    Behavior:
+      - async, bounded by Semaphore(max_concurrency)
+      - per username: GET /users/{u}  +  GET /users/{u}/repos?sort=pushed&per_page=100 (concurrent)
+      - retries (max_retries) on 5xx / timeout / secondary rate limit (403 + Retry-After), backoff
+      - 404 (deleted/suspended account) -> logged + skipped; one bad user never fails the batch
+      - 401 (invalid PAT) -> raised so the whole campaign fails *visibly* (never a silent zero)
+
+    Returns list[ProfileSchema]; usernames that fail (non-401) are omitted.
+    """
+    if not usernames:
+        return []
+
+    gh_headers = _github_headers(github_token)
+    semaphore = asyncio.Semaphore(max_concurrency)
+    RECENT_ACTIVITY_DAYS = 180
+
+    async def _fetch_one(username: str) -> dict | None:
+        user_url = f"{GITHUB_API_BASE}/users/{username}"
+        repos_url = f"{GITHUB_API_BASE}/users/{username}/repos"
+        repos_params = {"sort": "pushed", "per_page": 100}
+
+        attempt = 0
+        async with semaphore:
+            while True:
+                try:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        user_resp, repos_resp = await asyncio.gather(
+                            client.get(user_url, headers=gh_headers),
+                            client.get(repos_url, headers=gh_headers, params=repos_params),
+                        )
+
+                    # Invalid / expired token — fail loud (propagates out of gather)
+                    if user_resp.status_code == 401:
+                        raise ValueError(
+                            "GitHub PAT invalid or expired (401). Set a valid GITHUB_TOKEN."
+                        )
+
+                    # Deleted / suspended / nonexistent account — skip this candidate
+                    if user_resp.status_code == 404:
+                        _log.warning("[outbound_pat] user not found (404): %s", username)
+                        return None
+
+                    # Secondary rate limit / abuse detection — retry honoring Retry-After
+                    if user_resp.status_code == 403:
+                        if attempt < max_retries:
+                            retry_after = float(user_resp.headers.get("Retry-After", 2 ** attempt))
+                            _log.warning(
+                                "[outbound_pat] 403 for %s — retry %d after %.1fs",
+                                username, attempt + 1, retry_after,
+                            )
+                            await asyncio.sleep(min(retry_after, 10.0))
+                            attempt += 1
+                            continue
+                        _log.error("[outbound_pat] 403 exhausted for %s — skipping", username)
+                        return None
+
+                    user_resp.raise_for_status()
+                    user_data = user_resp.json()
+
+                    # Repos are best-effort: a failed repos call yields empty languages/repos
+                    repos_data: list = []
+                    if repos_resp.status_code == 200:
+                        repos_data = repos_resp.json()
+                    else:
+                        _log.warning(
+                            "[outbound_pat] repos fetch failed for %s: HTTP %d",
+                            username, repos_resp.status_code,
+                        )
+
+                    return _build_profile(username, user_data, repos_data, RECENT_ACTIVITY_DAYS)
+
+                except ValueError:
+                    raise  # 401 — propagate so the campaign errors visibly
+                except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.TransportError) as exc:
+                    if attempt < max_retries:
+                        backoff = 2 ** attempt
+                        _log.warning(
+                            "[outbound_pat] %s for %s — retry %d after %ds",
+                            type(exc).__name__, username, attempt + 1, backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        attempt += 1
+                        continue
+                    _log.error(
+                        "[outbound_pat] %s exhausted for %s — skipping: %s",
+                        type(exc).__name__, username, exc,
+                    )
+                    return None
+                except Exception as exc:
+                    _log.error("[outbound_pat] unexpected error for %s — skipping: %s", username, exc)
+                    return None
+
+    results = await asyncio.gather(*[_fetch_one(u) for u in usernames])
+    profiles = [p for p in results if p is not None]
+    _log.info("[outbound_pat] enriched %d/%d profiles", len(profiles), len(usernames))
+    return profiles
+
+
 async def run_outbound_campaign(campaign_id: str) -> None:
     """
     Background task: runs the full outbound sourcing pipeline for a campaign.
@@ -214,7 +437,11 @@ async def run_outbound_campaign(campaign_id: str) -> None:
             db.commit()
             return
 
-        if not use_brightdata and not github_token:
+        # Profile enrichment now ALWAYS uses the GitHub PAT (Bright Data Dataset API replaced —
+        # see OUTBOUND_PAT_MIGRATION_PLAN.md). A GitHub token is therefore mandatory regardless
+        # of the discovery provider. This subsumes the old "no sourcing provider" check, since
+        # the GitHub-search discovery fallback also requires the token.
+        if not github_token:
             write_log(
                 db,
                 event_type="outbound_campaign",
@@ -222,7 +449,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
                 latency_ms=0,
                 status="error",
                 campaign_id=campaign_id,
-                error_message="No GitHub sourcing provider configured. Set GITHUB_TOKEN or BRIGHTDATA_API_KEY in .env.",
+                error_message="GitHub PAT required for profile enrichment. Set GITHUB_TOKEN in .env or configure via /api/providers/configure.",
             )
             campaign.status = "error"
             campaign.completed_at = datetime.now(timezone.utc)
@@ -348,33 +575,52 @@ async def run_outbound_campaign(campaign_id: str) -> None:
                         error_message=str(exc),
                     )
 
+        _log.info("[outbound] users_found_total=%d logins=%s", len(all_users), list(all_users.keys()))
+
         if not all_users:
             campaign.status = "complete"
             campaign.completed_at = datetime.now(timezone.utc)
             db.commit()
             return
 
-        # Step 3: fetch full profiles
-        # Bright Data path: one batch call for all usernames (no per-profile rate limits)
-        # Fallback path: parallel GitHub REST calls with Semaphore(10)
+        # Step 3: enrich full profiles
+        # Discovery may have used Bright Data SERP, but enrichment is ALWAYS GitHub PAT now —
+        # the Bright Data Dataset API stage was removed (404 Dataset Not Found on this account).
+        # SERP path: batched concurrent PAT enrichment via fetch_profiles_pat().
+        # Fallback path: per-profile fetch_github_profile() (UNCHANGED).
         if use_brightdata:
-            from services.bright_data_service import fetch_profiles_dataset
-            start = time.monotonic()
-            profiles = await fetch_profiles_dataset(
-                list(all_users.keys()),
-                brightdata_api_key,
-                settings.brightdata_dataset_id,
-            )
-            latency_ms = int((time.monotonic() - start) * 1000)
-            write_log(
-                db,
-                event_type="github_profile_fetch",
-                api_provider="brightdata",
-                latency_ms=latency_ms,
-                status="success" if profiles else "error",
-                campaign_id=campaign_id,
-                error_message=None if profiles else "No profiles returned from Bright Data dataset",
-            )
+            try:
+                start = time.monotonic()
+                profiles = await fetch_profiles_pat(list(all_users.keys()), github_token)
+                latency_ms = int((time.monotonic() - start) * 1000)
+                _log.info(
+                    "[outbound] pat_profiles requested=%d returned=%d",
+                    len(all_users), len(profiles),
+                )
+                write_log(
+                    db,
+                    event_type="github_profile_fetch",
+                    api_provider="github",
+                    latency_ms=latency_ms,
+                    status="success" if profiles else "error",
+                    campaign_id=campaign_id,
+                    error_message=None if profiles else "PAT enrichment returned no profiles",
+                )
+            except Exception as exc:
+                # 401 / fatal enrichment failure — fail the campaign visibly, never silent.
+                write_log(
+                    db,
+                    event_type="github_profile_fetch",
+                    api_provider="github",
+                    latency_ms=0,
+                    status="error",
+                    campaign_id=campaign_id,
+                    error_message=f"PAT enrichment failed: {exc}",
+                )
+                campaign.status = "error"
+                campaign.completed_at = datetime.now(timezone.utc)
+                db.commit()
+                return
         else:
             profile_semaphore = asyncio.Semaphore(10)
 
@@ -384,8 +630,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
                         start = time.monotonic()
                         profile = await fetch_github_profile(login, github_token)
                         latency_ms = int((time.monotonic() - start) * 1000)
-                        write_log(
-                            db,
+                        _bg_write_log(
                             event_type="github_profile_fetch",
                             api_provider="github",
                             latency_ms=latency_ms,
@@ -395,8 +640,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
                         )
                         return profile
                     except Exception as exc:
-                        write_log(
-                            db,
+                        _bg_write_log(
                             event_type="github_profile_fetch",
                             api_provider="github",
                             latency_ms=0,
@@ -410,6 +654,23 @@ async def run_outbound_campaign(campaign_id: str) -> None:
                 *[_fetch_with_semaphore(login) for login in all_users]
             )
             profiles = [p for p in profile_results if p is not None]
+
+        # Guard: enrichment produced nothing usable → surface as error, never a silent
+        # "complete with 0 candidates" (the original Dataset-stage failure mode).
+        if not profiles:
+            write_log(
+                db,
+                event_type="github_profile_fetch",
+                api_provider="github",
+                latency_ms=0,
+                status="error",
+                campaign_id=campaign_id,
+                error_message="No profiles could be enriched from the discovered usernames.",
+            )
+            campaign.status = "error"
+            campaign.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            return
 
         # Step 4: score each profile and generate outreach (semaphore 3)
         score_semaphore = asyncio.Semaphore(3)
@@ -431,8 +692,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
                         hr_name=hr_name,
                     )
                     latency_ms = int((time.monotonic() - start) * 1000)
-                    write_log(
-                        db,
+                    _bg_write_log(
                         event_type="outbound_profile_score",
                         api_provider="featherless",
                         latency_ms=latency_ms,
@@ -441,8 +701,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
                     )
                     return {**profile, **result}
                 except Exception as exc:
-                    write_log(
-                        db,
+                    _bg_write_log(
                         event_type="outbound_profile_score",
                         api_provider="featherless",
                         latency_ms=0,

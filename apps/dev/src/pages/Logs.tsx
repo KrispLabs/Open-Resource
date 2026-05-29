@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, Fragment } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { api } from '../api/client'
@@ -79,7 +79,7 @@ export default function Logs() {
   params.set('limit', String(PAGE_SIZE))
   params.set('offset', String(page * PAGE_SIZE))
 
-  const { data, isLoading } = useQuery<LogsResponse>({
+  const { data, isLoading, isError } = useQuery<LogsResponse>({
     queryKey: ['dev-logs', eventType, status, provider, jobId, page],
     queryFn: () => api.get(`/api/dev/logs?${params.toString()}`).then(r => r.data),
     refetchInterval: autoRefresh ? 10000 : false,
@@ -177,6 +177,12 @@ export default function Logs() {
           <tbody>
             {isLoading ? (
               <SkeletonTableRows rows={8} />
+            ) : isError ? (
+              <tr>
+                <td colSpan={8} style={{ padding: '32px 24px', textAlign: 'center', fontSize: '13px', color: 'var(--color-danger)' }}>
+                  Failed to load logs. Check your connection and try again.
+                </td>
+              </tr>
             ) : logs.length === 0 ? (
               <tr>
                 <td colSpan={8} style={{ padding: 0 }}>
@@ -185,9 +191,8 @@ export default function Logs() {
               </tr>
             ) : (
               logs.map((log) => (
-                <>
+                <Fragment key={log.id}>
                   <tr
-                    key={log.id}
                     style={{
                       backgroundColor: log.status === 'error' ? 'rgba(185, 28, 28, 0.05)' : undefined,
                       cursor: log.error_message ? 'pointer' : 'default',
@@ -225,7 +230,6 @@ export default function Logs() {
                   </tr>
                   {expandedId === log.id && log.error_message && (
                     <tr
-                      key={`${log.id}-expanded`}
                       style={{ backgroundColor: 'rgba(185, 28, 28, 0.05)' }}
                     >
                       <td colSpan={8}>
@@ -244,7 +248,7 @@ export default function Logs() {
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               ))
             )}
           </tbody>
