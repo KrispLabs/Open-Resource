@@ -10,8 +10,11 @@ If BRIGHTDATA_API_KEY is empty the pipeline falls back to GitHub REST; these
 functions are never called in that case.
 """
 import asyncio
+import logging
 import re
 import httpx
+
+_log = logging.getLogger(__name__)
 
 BRIGHTDATA_API_BASE = "https://api.brightdata.com"
 POLL_INTERVAL = 2.0   # seconds between snapshot poll attempts
@@ -84,14 +87,29 @@ async def search_candidates_serp(
 
     search_url = f"https://www.google.com/search?q=site:github.com+{query.replace(' ', '+')}"
     body = {"zone": serp_zone, "url": search_url, "format": "json"}
+    endpoint = f"{BRIGHTDATA_API_BASE}/request"
+
+    _log.info(
+        "[brightdata_serp] REQUEST endpoint=%s zone=%s search_url=%s payload_keys=%s",
+        endpoint, serp_zone, search_url, list(body.keys()),
+    )
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
-                f"{BRIGHTDATA_API_BASE}/request",
+                endpoint,
                 headers=_bd_headers(api_key),
                 json=body,
             )
+
+            # Capture full diagnostic info before raise_for_status discards the body
+            _log.info(
+                "[brightdata_serp] RESPONSE status=%d headers=%s body_preview=%r",
+                resp.status_code,
+                dict(resp.headers),
+                resp.text[:2000],
+            )
+
             if resp.status_code == 407:
                 raise ValueError(f"Bright Data SERP: zone '{serp_zone}' not found or auth failed")
             resp.raise_for_status()
