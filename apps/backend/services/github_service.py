@@ -4,12 +4,15 @@ Uses httpx for async HTTP calls — same pattern as jd_analyzer.py.
 """
 import asyncio
 import json
+import logging
 import re
 import time
 from datetime import datetime, timezone
 import httpx
 from config import settings
 from log_helper import write_log
+
+_log = logging.getLogger(__name__)
 
 GITHUB_API_BASE = "https://api.github.com"
 FEATHERLESS_API_BASE = "https://api.featherless.ai/v1/chat/completions"
@@ -65,11 +68,43 @@ async def extract_github_signals(jd_parsed: dict, featherless_api_key: str) -> d
     data = resp.json()
     content = data["choices"][0]["message"]["content"].strip()
 
-    # Strip markdown code fences if present
-    content = re.sub(r"^```(?:json)?\s*", "", content)
-    content = re.sub(r"\s*```$", "", content)
+    _log.info("[outbound_signals] raw_response_len=%d", len(content))
 
-    return json.loads(content)
+    # Strip markdown code fences (multiline-safe, same as jd_analyzer._extract_json)
+    content = re.sub(r"^```(?:json)?\s*\n?", "", content, flags=re.MULTILINE)
+    content = re.sub(r"\n?```\s*$", "", content, flags=re.MULTILINE)
+    content = content.strip()
+
+    # Try direct parse (happy path — clean JSON response)
+    try:
+        result = json.loads(content)
+        _log.info("[outbound_signals] direct_parse=success keys=%s", list(result.keys()))
+        return result
+    except json.JSONDecodeError:
+        _log.warning("[outbound_signals] direct_parse=failed trying brace-extraction fallback")
+
+    # Fallback: first { to last } — handles trailing prose after the JSON block
+    start = content.find("{")
+    end = content.rfind("}")
+    if start != -1 and end != -1 and start < end:
+        try:
+            result = json.loads(content[start : end + 1])
+            _log.info(
+                "[outbound_signals] fallback_parse=success keys=%s",
+                list(result.keys()),
+            )
+            return result
+        except json.JSONDecodeError:
+            _log.error(
+                "[outbound_signals] fallback_parse=failed content_preview=%r",
+                content[:300],
+            )
+
+    raise json.JSONDecodeError(
+        f"Could not extract valid JSON from signals response. Preview: {content[:300]!r}",
+        content,
+        0,
+    )
 
 
 async def search_github_users(query: str, github_token: str) -> list[dict]:
