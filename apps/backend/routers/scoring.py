@@ -16,6 +16,8 @@ from utils.sse import format_sse
 router = APIRouter(tags=["scoring"])
 
 MAX_CONCURRENT = 5  # max parallel AI scoring calls
+_SSE_KEEPALIVE_INTERVAL = 25.0   # seconds between SSE comment pings
+_SSE_STEP_THRESHOLD = 3          # emit "Still processing..." after this many keepalives with no progress
 
 
 def _sse(event_type: str, payload: dict) -> str:
@@ -61,8 +63,26 @@ def trigger_scoring(
         raise HTTPException(status_code=404, detail="Job not found")
     if job.created_by != current_user.id:
         raise HTTPException(status_code=403, detail="Not your job")
-    if job.status != "closed":
+    if job.status in ("hired", "archived"):
+        raise HTTPException(status_code=400, detail="Cannot score a hired or archived job")
+    if job.status not in ("closed", "sourcing", "interviewing"):
         raise HTTPException(status_code=400, detail="Job must be closed before scoring. Call /close first.")
+
+    # Pre-flight: Featherless key must be present or every candidate will score 0
+    # with a silent error. Return 503 here so the HR portal shows a clear message
+    # instead of a completed stream with all-zero scores.
+    from services.provider_manager import provider_manager
+    from config import settings as _settings
+    featherless_key = provider_manager.get("featherless").get("api_key") or _settings.featherlessai_api_key
+    if not featherless_key:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Featherless AI is not configured — cannot score candidates. "
+                "Set FEATHERLESSAI_API_KEY in your .env and restart, "
+                "or configure via the Dev portal at /api/providers/configure."
+            ),
+        )
 
     return {"message": "Scoring started", "job_id": job_id}
 
@@ -84,7 +104,9 @@ async def scoring_stream(
         raise HTTPException(status_code=404, detail="Job not found")
     if current_user.role == "hr" and job.created_by != current_user.id:
         raise HTTPException(status_code=403, detail="Not your job")
-    if job.status != "closed":
+    if job.status in ("hired", "archived"):
+        raise HTTPException(status_code=400, detail="Cannot score a hired or archived job")
+    if job.status not in ("closed", "sourcing", "interviewing"):
         raise HTTPException(status_code=400, detail="Job must be closed before scoring")
 
     applications = (
@@ -114,7 +136,7 @@ async def scoring_stream(
                 async with semaphore:
                     if await request.is_disconnected():
                         return
-                    applicant = async_db.query(User).filter(User.id == app.applicant_id).first()
+                    applicant = applicants_by_id.get(app.applicant_id)
                     name = applicant.name if applicant else "Candidate"
                     await queue.put(("candidate_start", name, index, None))
                     try:
@@ -130,12 +152,19 @@ async def scoring_stream(
                     except Exception as exc:
                         await queue.put(("candidate_error", name, index, str(exc)))
 
+            # Preload applicant names to avoid N+1 inside concurrent tasks
+            applicant_ids = [app.applicant_id for app in applications]
+            applicants_by_id = {
+                u.id: u for u in async_db.query(User).filter(User.id.in_(applicant_ids)).all()
+            }
+
             tasks = [
                 asyncio.create_task(score_and_enqueue(app, i + 1))
                 for i, app in enumerate(applications)
             ]
 
             completed = 0
+            idle_ticks = 0  # keepalive cycles with no candidate progress
             while completed < total:
                 if await request.is_disconnected():
                     for t in tasks:
@@ -144,10 +173,16 @@ async def scoring_stream(
 
                 try:
                     event_type, name, index, payload = await asyncio.wait_for(
-                        queue.get(), timeout=120.0
+                        queue.get(), timeout=_SSE_KEEPALIVE_INTERVAL
                     )
+                    idle_ticks = 0
                 except asyncio.TimeoutError:
-                    yield _sse("step", {"text": "Still processing..."})
+                    # Send SSE comment to prevent proxy/load-balancer from closing idle connection
+                    yield ": keepalive\n\n"
+                    idle_ticks += 1
+                    if idle_ticks >= _SSE_STEP_THRESHOLD:
+                        yield _sse("step", {"text": "Still processing..."})
+                        idle_ticks = 0
                     continue
 
                 if event_type == "candidate_start":
@@ -257,12 +292,23 @@ def get_rankings(
         .all()
     )
 
+    # Bulk-fetch scores and applicants to avoid N+1
+    app_ids = [a.id for a in applications]
+    applicant_ids = [a.applicant_id for a in applications]
+
+    scores_by_app = {
+        s.application_id: s
+        for s in db.query(CandidateScore).filter(CandidateScore.application_id.in_(app_ids)).all()
+    }
+    applicants_by_id = {
+        u.id: u
+        for u in db.query(User).filter(User.id.in_(applicant_ids)).all()
+    }
+
     results = []
     for app in applications:
-        score = db.query(CandidateScore).filter(
-            CandidateScore.application_id == app.id
-        ).first()
-        applicant = db.query(User).filter(User.id == app.applicant_id).first()
+        score = scores_by_app.get(app.id)
+        applicant = applicants_by_id.get(app.applicant_id)
         entry = {
             "application_id": app.id,
             "rank": app.rank,

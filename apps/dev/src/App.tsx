@@ -3,6 +3,8 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ToastProvider } from './components/Toast'
 import { ProtectedRoute } from './components/ProtectedRoute'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { AuthSync } from './components/AuthSync'
 import { Layout } from './components/Layout'
 import Login from './pages/Login'
 import DevDashboard from './pages/DevDashboard'
@@ -18,6 +20,7 @@ const queryClient = new QueryClient({
     queries: {
       retry: 1,
       staleTime: 10000,
+      refetchOnWindowFocus: false,
     },
   },
 })
@@ -52,33 +55,36 @@ function SetupGate({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <ToastProvider>
-        <BrowserRouter>
-          <SetupGate>
-            <Routes>
-              <Route path="/login" element={<Login />} />
-              <Route path="/setup" element={<Setup />} />
-              <Route
-                path="/"
-                element={
-                  <ProtectedRoute>
-                    <Layout />
-                  </ProtectedRoute>
-                }
-              >
-                <Route index element={<Navigate to="/dashboard" replace />} />
-                <Route path="dashboard" element={<DevDashboard />} />
-                <Route path="jobs" element={<AllJobs />} />
-                <Route path="logs" element={<Logs />} />
-                <Route path="scoring-config" element={<ScoringConfig />} />
-                <Route path="api-usage" element={<ApiUsage />} />
-                <Route path="admin/providers" element={<AdminProviders />} />
-              </Route>
-            </Routes>
-          </SetupGate>
-        </BrowserRouter>
-      </ToastProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <BrowserRouter>
+            <AuthSync />
+            <SetupGate>
+              <Routes>
+                <Route path="/login" element={<Login />} />
+                <Route path="/setup" element={<Setup />} />
+                <Route
+                  path="/"
+                  element={
+                    <ProtectedRoute>
+                      <Layout />
+                    </ProtectedRoute>
+                  }
+                >
+                  <Route index element={<Navigate to="/dashboard" replace />} />
+                  <Route path="dashboard" element={<DevDashboard />} />
+                  <Route path="jobs" element={<AllJobs />} />
+                  <Route path="logs" element={<Logs />} />
+                  <Route path="scoring-config" element={<ScoringConfig />} />
+                  <Route path="api-usage" element={<ApiUsage />} />
+                  <Route path="admin/providers" element={<AdminProviders />} />
+                </Route>
+              </Routes>
+            </SetupGate>
+          </BrowserRouter>
+        </ToastProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   )
 }

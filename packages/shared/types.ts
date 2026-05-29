@@ -16,7 +16,7 @@ export interface AuthResponse {
 }
 
 // Jobs
-export type JobStatus = 'draft' | 'active' | 'closed' | 'archived'
+export type JobStatus = 'draft' | 'active' | 'closed' | 'sourcing' | 'interviewing' | 'hired' | 'archived'
 export type JobType = 'remote' | 'hybrid' | 'onsite'
 
 export interface ScoringWeights {
@@ -37,6 +37,11 @@ export interface JDParsed {
   weight_reasoning: string
 }
 
+export interface HiringSummary {
+  selected_count: number
+  notes: string
+}
+
 export interface Job {
   id: string
   created_by: string
@@ -51,10 +56,13 @@ export interface Job {
   jd_parsed: JDParsed | null
   created_at: string
   closed_at: string | null
+  hired_at: string | null
+  hiring_summary: HiringSummary | null
+  application_count?: number
 }
 
 // Applications
-export type ApplicationStatus = 'pending' | 'shortlisted' | 'reviewing' | 'rejected'
+export type ApplicationStatus = 'pending' | 'shortlisted' | 'reviewing' | 'rejected' | 'not_shortlisted'
 
 export interface Application {
   id: string
@@ -118,7 +126,7 @@ export interface SSEEvent {
 }
 
 // Outbound
-export type CampaignStatus = 'running' | 'complete' | 'paused'
+export type CampaignStatus = 'running' | 'complete' | 'paused' | 'error'
 export type OutreachStatus = 'draft' | 'sent' | 'opened' | 'replied'
 
 export interface OutboundCampaign {
@@ -129,7 +137,9 @@ export interface OutboundCampaign {
   github_search_signals: string[]
   total_found: number
   total_contacted: number
+  run_number: number
   created_at: string
+  completed_at: string | null
 }
 
 export interface OutboundCandidate {
@@ -163,13 +173,15 @@ export interface ScoringConfig {
 export type LogEventType =
   | 'jd_analysis'
   | 'candidate_scoring'
+  | 'outbound_signals'
+  | 'outbound_profile_score'
   | 'github_search'
   | 'profile_scoring'
   | 'outreach_generation'
   | 'feedback_generation'
 
 export type LogStatus = 'success' | 'error'
-export type ApiProvider = 'claude' | 'github'
+export type ApiProvider = 'featherless' | 'github'
 
 export interface SystemLog {
   id: string

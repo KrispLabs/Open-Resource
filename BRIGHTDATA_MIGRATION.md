@@ -314,3 +314,4 @@ The `api_provider` field in `system_logs` now includes `"brightdata"` as a value
 7. Dev portal shows `api_provider=brightdata` log entries with latency — demonstrating Bright Data as live infrastructure
 
 **Positioning**: "We didn't add Bright Data as a demo prop. Remove it and enrichment quality visibly degrades: fewer candidates found (GitHub search vs Google), shallower profile data (public API vs full dataset), no LinkedIn cross-reference, no agent web context."
+/

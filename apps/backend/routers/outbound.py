@@ -17,6 +17,8 @@ from services.github_service import run_outbound_campaign
 
 router = APIRouter(tags=["outbound"])
 
+_campaign_tasks: set[asyncio.Task] = set()
+
 
 # ── Create campaign ───────────────────────────────────────────────────────────
 
@@ -35,16 +37,59 @@ async def create_campaign(
         raise HTTPException(status_code=404, detail="Job not found")
     if job.created_by != current_user.id:
         raise HTTPException(status_code=403, detail="Not your job")
-    if job.status != "closed":
+    if job.status not in ("closed", "sourcing", "interviewing"):
         raise HTTPException(
             status_code=400,
-            detail="Outbound campaigns can only be created for closed jobs",
+            detail="Campaigns can only be created for closed, sourcing, or interviewing jobs",
         )
+
+    # Pre-flight: verify Featherless is configured before accepting the campaign
+    from services.provider_manager import provider_manager
+    from config import settings as _settings
+    featherless_key = provider_manager.get("featherless").get("api_key") or _settings.featherlessai_api_key
+    if not featherless_key:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Featherless AI is not configured — cannot launch campaign. "
+                "Set FEATHERLESSAI_API_KEY in your .env and restart, "
+                "or configure via the Dev portal at /api/providers/configure."
+            ),
+        )
+
+    # Pre-flight: need at least one GitHub sourcing provider
+    github_token = provider_manager.get("github").get("token") or _settings.github_token
+    brightdata_key = provider_manager.get("brightdata").get("api_key") or _settings.brightdata_api_key
+    if not github_token and not brightdata_key:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No GitHub sourcing provider configured — cannot launch campaign. "
+                "Set GITHUB_TOKEN or BRIGHTDATA_API_KEY in your .env and restart."
+            ),
+        )
+
+    # Pre-flight: job must have been analyzed (jd_parsed required for signal extraction)
+    if not job.jd_parsed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Job description has not been analyzed yet. "
+                "Run POST /jobs/{job_id}/analyze before launching a sourcing campaign."
+            ),
+        )
+
+    # Auto-advance: closed → sourcing when first campaign is launched
+    if job.status == "closed":
+        job.status = "sourcing"
+
+    existing_count = db.query(OutboundCampaign).filter(OutboundCampaign.job_id == job_id).count()
 
     campaign = OutboundCampaign(
         job_id=job_id,
         created_by=current_user.id,
         status="running",
+        run_number=existing_count + 1,
         created_at=datetime.now(timezone.utc),
     )
     db.add(campaign)
@@ -52,9 +97,52 @@ async def create_campaign(
     db.refresh(campaign)
 
     # Launch background task with its own DB session — cannot share request's session
-    asyncio.create_task(run_outbound_campaign(campaign.id))
+    task = asyncio.create_task(run_outbound_campaign(campaign.id))
+    _campaign_tasks.add(task)
+    task.add_done_callback(_campaign_tasks.discard)
 
     return CampaignCreateResponse(campaign_id=campaign.id, status="running")
+
+
+# ── List campaigns for a specific job ────────────────────────────────────────
+
+@router.get("/jobs/{job_id}/campaigns", response_model=list[CampaignResponse])
+def list_job_campaigns(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_hr),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your job")
+    campaigns = (
+        db.query(OutboundCampaign)
+        .filter(
+            OutboundCampaign.job_id == job_id,
+            OutboundCampaign.created_by == current_user.id,
+        )
+        .order_by(OutboundCampaign.created_at.desc())
+        .all()
+    )
+    return campaigns
+
+
+# ── List all campaigns for current HR user ────────────────────────────────────
+
+@router.get("/campaigns", response_model=list[CampaignResponse])
+def list_campaigns(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_hr),
+):
+    campaigns = (
+        db.query(OutboundCampaign)
+        .filter(OutboundCampaign.created_by == current_user.id)
+        .order_by(OutboundCampaign.created_at.desc())
+        .all()
+    )
+    return campaigns
 
 
 # ── Get campaign ──────────────────────────────────────────────────────────────

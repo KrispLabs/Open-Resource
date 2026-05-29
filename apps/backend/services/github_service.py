@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+from datetime import datetime, timezone
 import httpx
 from config import settings
 from log_helper import write_log
@@ -177,6 +178,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
         job = db.query(Job).filter(Job.id == campaign.job_id).first()
         if not job:
             campaign.status = "error"
+            campaign.completed_at = datetime.now(timezone.utc)
             db.commit()
             return
 
@@ -184,11 +186,63 @@ async def run_outbound_campaign(campaign_id: str) -> None:
         scoring_weights = job.scoring_weights or {}
 
         from services.provider_manager import provider_manager
-        featherless_api_key = provider_manager.get("featherless").get("api_key", settings.featherlessai_api_key)
-        github_token = provider_manager.get("github").get("token", settings.github_token)
-        brightdata_api_key = provider_manager.get("brightdata").get("api_key", settings.brightdata_api_key)
-        brightdata_serp_zone = provider_manager.get("brightdata").get("serp_zone", settings.brightdata_serp_zone) or "serp_api2"
+        featherless_cfg = provider_manager.get("featherless")
+        featherless_api_key = featherless_cfg.get("api_key") or settings.featherlessai_api_key
+        featherless_model = featherless_cfg.get("model", FEATHERLESS_MODEL)
+
+        github_cfg = provider_manager.get("github")
+        github_token = github_cfg.get("token") or settings.github_token
+
+        brightdata_cfg = provider_manager.get("brightdata")
+        brightdata_api_key = brightdata_cfg.get("api_key") or settings.brightdata_api_key
+        brightdata_serp_zone = brightdata_cfg.get("serp_zone") or settings.brightdata_serp_zone or "serp_api2"
         use_brightdata = bool(brightdata_api_key)
+
+        # Pre-flight: Featherless key is required for signals + scoring
+        if not featherless_api_key:
+            write_log(
+                db,
+                event_type="outbound_campaign",
+                api_provider="featherless",
+                latency_ms=0,
+                status="error",
+                campaign_id=campaign_id,
+                error_message="Featherless API key not configured. Set FEATHERLESSAI_API_KEY in .env or configure via /api/providers/configure.",
+            )
+            campaign.status = "error"
+            campaign.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            return
+
+        if not use_brightdata and not github_token:
+            write_log(
+                db,
+                event_type="outbound_campaign",
+                api_provider="github",
+                latency_ms=0,
+                status="error",
+                campaign_id=campaign_id,
+                error_message="No GitHub sourcing provider configured. Set GITHUB_TOKEN or BRIGHTDATA_API_KEY in .env.",
+            )
+            campaign.status = "error"
+            campaign.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            return
+
+        if not jd_parsed:
+            write_log(
+                db,
+                event_type="outbound_campaign",
+                api_provider="featherless",
+                latency_ms=0,
+                status="error",
+                campaign_id=campaign_id,
+                error_message="Job has no parsed JD. Run POST /jobs/{id}/analyze before launching a campaign.",
+            )
+            campaign.status = "error"
+            campaign.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            return
 
         # Step 1: extract signals
         try:
@@ -197,13 +251,14 @@ async def run_outbound_campaign(campaign_id: str) -> None:
             write_log(
                 db,
                 event_type="outbound_signals",
-                api_provider="claude",
+                api_provider="featherless",
                 latency_ms=0,
                 status="error",
                 campaign_id=campaign_id,
                 error_message=str(exc),
             )
             campaign.status = "error"
+            campaign.completed_at = datetime.now(timezone.utc)
             db.commit()
             return
 
@@ -213,6 +268,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
         search_queries = signals.get("search_queries", [])
         if not search_queries:
             campaign.status = "complete"
+            campaign.completed_at = datetime.now(timezone.utc)
             db.commit()
             return
 
@@ -294,6 +350,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
 
         if not all_users:
             campaign.status = "complete"
+            campaign.completed_at = datetime.now(timezone.utc)
             db.commit()
             return
 
@@ -377,7 +434,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
                     write_log(
                         db,
                         event_type="outbound_profile_score",
-                        api_provider="claude",
+                        api_provider="featherless",
                         latency_ms=latency_ms,
                         status="success",
                         campaign_id=campaign_id,
@@ -387,7 +444,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
                     write_log(
                         db,
                         event_type="outbound_profile_score",
-                        api_provider="claude",
+                        api_provider="featherless",
                         latency_ms=0,
                         status="error",
                         campaign_id=campaign_id,
@@ -424,6 +481,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
 
         campaign.status = "complete"
         campaign.total_found = saved_count
+        campaign.completed_at = datetime.now(timezone.utc)
         db.commit()
 
     except Exception as exc:
@@ -431,6 +489,7 @@ async def run_outbound_campaign(campaign_id: str) -> None:
             campaign = db.query(OutboundCampaign).filter(OutboundCampaign.id == campaign_id).first()
             if campaign:
                 campaign.status = "error"
+                campaign.completed_at = datetime.now(timezone.utc)
                 db.commit()
         except Exception:
             pass

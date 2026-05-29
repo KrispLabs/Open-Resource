@@ -3,6 +3,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { Layout } from './components/Layout'
 import { ToastProvider } from './components/Toast'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { AuthSync } from './components/AuthSync'
+import { BackendOfflineBanner } from './components/BackendOfflineBanner'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Jobs from './pages/Jobs'
@@ -16,14 +19,25 @@ import Outbound from './pages/Outbound'
 import Campaign from './pages/Campaign'
 import Campaigns from './pages/Campaigns'
 
-const queryClient = new QueryClient()
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      retry: 1,
+      refetchOnWindowFocus: false,
+    },
+  },
+})
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <ToastProvider>
-      <BrowserRouter>
-        <Routes>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+        <BrowserRouter>
+          <BackendOfflineBanner />
+          <AuthSync />
+          <Routes>
           <Route path="/login" element={<Login />} />
           <Route
             path="/"
@@ -46,9 +60,10 @@ export default function App() {
             <Route path="campaigns" element={<Campaigns />} />
             <Route path="campaigns/:id" element={<Campaign />} />
           </Route>
-        </Routes>
-      </BrowserRouter>
-      </ToastProvider>
-    </QueryClientProvider>
+          </Routes>
+        </BrowserRouter>
+        </ToastProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   )
 }

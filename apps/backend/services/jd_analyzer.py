@@ -49,13 +49,23 @@ async def analyze_jd(
 ) -> dict:
     start = time.monotonic()
     try:
+        featherless_cfg = provider_manager.get("featherless")
+        api_key = featherless_cfg.get("api_key") or settings.featherlessai_api_key
+        model = featherless_cfg.get("model") or "meta-llama/Meta-Llama-3.1-8B-Instruct"
+
+        if not api_key:
+            raise ValueError(
+                "Featherless API key not configured. Set FEATHERLESSAI_API_KEY in .env "
+                "or configure via /api/providers/configure."
+            )
+
         messages = [{"role": "user", "content": JD_ANALYSIS_PROMPT + description}]
         headers = {
-            "Authorization": f"Bearer {provider_manager.get('featherless').get('api_key', settings.featherlessai_api_key)}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
         payload = {
-            "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "model": model,
             "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
             "max_tokens": 1024,
             "temperature": 0.2,
@@ -89,7 +99,7 @@ async def analyze_jd(
         write_log(
             db,
             event_type="jd_analysis",
-            api_provider="claude",
+            api_provider="featherless",
             latency_ms=latency_ms,
             status="success",
             job_id=job_id,
@@ -103,7 +113,7 @@ async def analyze_jd(
         write_log(
             db,
             event_type="jd_analysis",
-            api_provider="claude",
+            api_provider="featherless",
             latency_ms=latency_ms,
             status="error",
             job_id=job_id,

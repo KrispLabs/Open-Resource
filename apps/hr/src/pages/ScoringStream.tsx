@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { useSSE } from '../hooks/useSSE'
 import { api } from '../api/client'
 import { CheckCircle, Loader2, XCircle, User, ArrowLeft } from 'lucide-react'
@@ -23,6 +24,7 @@ interface SessionDoneSummary {
 export default function ScoringStream() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { showToast } = useToast()
 
   // 'starting' = calling POST /score, 'streaming' = SSE active, 'error' = failed
@@ -37,19 +39,22 @@ export default function ScoringStream() {
   useEffect(() => {
     if (!id) return
 
+    // AbortController cancels the in-flight POST when Strict Mode unmounts the first
+    // instance, preventing the double-fire that would otherwise occur in development.
+    const ctrl = new AbortController()
     let cancelled = false
 
     async function triggerScoring() {
       try {
-        await api.post(`/jobs/${id}/score`)
+        await api.post(`/jobs/${id}/score`, undefined, { signal: ctrl.signal })
         if (!cancelled) setInitState('streaming')
       } catch (err: unknown) {
-        if (cancelled) return
-        const status = (err as { response?: { status?: number } })?.response?.status
-        if (status === 400) {
+        if (ctrl.signal.aborted || cancelled) return
+        const httpStatus = (err as { response?: { status?: number } })?.response?.status
+        if (httpStatus === 400) {
           setJobNotClosed(true)
         }
-        const errMsg = status === 400
+        const errMsg = httpStatus === 400
           ? 'Job must be closed before scoring. Go back and close the job first.'
           : ((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to start scoring.')
         setInitError(errMsg)
@@ -59,7 +64,10 @@ export default function ScoringStream() {
     }
 
     triggerScoring()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      ctrl.abort()
+    }
   }, [id])
 
   // Build candidate cards from events
@@ -223,7 +231,13 @@ export default function ScoringStream() {
             <span style={{ color: 'var(--color-danger)' }}>· {sessionDone.not_shortlisted} rejected</span>
           </div>
           <button
-            onClick={() => navigate(`/jobs/${id}/rankings`)}
+            onClick={() => {
+              // Ensure Rankings page never renders pre-scoring stale data.
+              // staleTime=30s + refetchOnWindowFocus=false means cache won't
+              // self-heal within the typical scoring session window.
+              queryClient.invalidateQueries({ queryKey: ['applications', id] })
+              navigate(`/jobs/${id}/rankings`)
+            }}
             className="mt-3 px-4 py-2 rounded text-sm font-semibold text-white"
             style={{ backgroundColor: 'var(--color-primary)', borderRadius: '6px' }}
           >

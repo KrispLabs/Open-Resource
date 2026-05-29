@@ -6,9 +6,13 @@ import { useAuthStore } from '../store/auth'
 import { VerdictBadge } from '../components/Atoms'
 import { Skeleton } from '../components/Skeleton'
 
-function DeadlineText({ deadline, status }: { deadline: string; status: string }) {
+function DeadlineText({ deadline, status }: { deadline: string | null; status: string }) {
   if (status !== 'active') {
     return <span style={{ color: 'var(--text-muted)' }}>Closed</span>
+  }
+
+  if (!deadline) {
+    return <span style={{ color: 'var(--color-success)' }}>Open</span>
   }
 
   const daysLeft = Math.ceil(

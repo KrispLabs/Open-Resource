@@ -9,7 +9,7 @@ interface Toast {
 }
 
 interface ToastCtx {
-  showToast: (message: string, type?: ToastType) => void
+  showToast: (message: unknown, type?: ToastType) => void
 }
 
 const ToastContext = createContext<ToastCtx>({ showToast: () => {} })
@@ -17,9 +17,16 @@ const ToastContext = createContext<ToastCtx>({ showToast: () => {} })
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
 
-  const showToast = useCallback((message: string, type: ToastType = 'info') => {
+  const showToast = useCallback((message: unknown, type: ToastType = 'info') => {
     const id = crypto.randomUUID()
-    setToasts(prev => [...prev.slice(-2), { id, message, type }])
+    // Coerce to string — API error details can be arrays or objects (Pydantic 422)
+    const safeMessage =
+      typeof message === 'string'
+        ? message
+        : Array.isArray(message)
+        ? (message as Array<{ msg?: string }>)[0]?.msg ?? JSON.stringify(message)
+        : JSON.stringify(message)
+    setToasts(prev => [...prev.slice(-2), { id, message: safeMessage, type }])
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id))
     }, 4000)

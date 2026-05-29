@@ -35,6 +35,8 @@ export const mockJobs: Job[] = [
     },
     created_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
     closed_at: null,
+    hired_at: null,
+    hiring_summary: null,
   },
   {
     id: 'job-2',
@@ -56,6 +58,8 @@ export const mockJobs: Job[] = [
     jd_parsed: null,
     created_at: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
     closed_at: null,
+    hired_at: null,
+    hiring_summary: null,
   },
   {
     id: 'job-3',
@@ -77,6 +81,8 @@ export const mockJobs: Job[] = [
     jd_parsed: null,
     created_at: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
     closed_at: null,
+    hired_at: null,
+    hiring_summary: null,
   },
 ]
 

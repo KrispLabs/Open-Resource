@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import React from 'react'
 import {
   Loader2,
   Send,
@@ -98,7 +99,7 @@ export default function Campaign() {
     error: campaignError,
   } = useQuery<OutboundCampaign>({
     queryKey: ['campaign', campaignId],
-    queryFn: () => api.get<OutboundCampaign>(`/campaigns/${campaignId}`).then((r) => r.data),
+    queryFn: () => api.get<OutboundCampaign>(`/api/campaigns/${campaignId}`).then((r) => r.data),
     enabled: !!campaignId,
   })
 
@@ -109,7 +110,7 @@ export default function Campaign() {
   } = useQuery<OutboundCandidate[]>({
     queryKey: ['campaign-candidates', campaignId],
     queryFn: () =>
-      api.get<OutboundCandidate[]>(`/campaigns/${campaignId}/candidates`).then((r) => r.data),
+      api.get<OutboundCandidate[]>(`/api/campaigns/${campaignId}/candidates`).then((r) => r.data),
     enabled: !!campaignId,
   })
 
@@ -122,7 +123,7 @@ export default function Campaign() {
 
   const { mutate: sendAll, isPending: sending } = useMutation({
     mutationFn: () =>
-      api.post<{ sent: number }>(`/campaigns/${campaignId}/send-all`).then((r) => r.data),
+      api.post<{ sent: number }>(`/api/campaigns/${campaignId}/send-all`).then((r) => r.data),
     onSuccess: (data) => {
       setConfirmSendAll(false)
       showToast(`${data.sent} outreach email${data.sent !== 1 ? 's' : ''} sent.`, 'success')
@@ -504,9 +505,8 @@ export default function Campaign() {
                 const isLast = i === filteredCandidates.length - 1
 
                 return (
-                  <>
+                  <React.Fragment key={candidate.id}>
                     <tr
-                      key={candidate.id}
                       style={{
                         borderBottom:
                           !isExpanded && !isLast ? '1px solid var(--color-elevated)' : isExpanded ? '1px solid var(--color-elevated)' : 'none',
@@ -654,7 +654,6 @@ export default function Campaign() {
                     {/* Expanded email row */}
                     {isExpanded && (
                       <tr
-                        key={`${candidate.id}-email`}
                         style={{
                           borderBottom:
                             i < filteredCandidates.length - 1
@@ -666,7 +665,7 @@ export default function Campaign() {
                         <ExpandedEmailRow email={candidate.outreach_email} />
                       </tr>
                     )}
-                  </>
+                  </React.Fragment>
                 )
               })}
             </tbody>

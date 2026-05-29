@@ -39,7 +39,7 @@ class Job(Base):
     description = Column(Text, nullable=False)
     location = Column(String)
     job_type = Column(String, default="remote")  # remote | hybrid | onsite
-    status = Column(String, default="draft")  # draft | active | closed | archived
+    status = Column(String, default="draft")  # draft | active | closed | sourcing | interviewing | hired | archived
     application_deadline = Column(DateTime(timezone=True))
     shortlist_cutoff = Column(Integer, nullable=True)
     scoring_weights = Column(JSON, default=lambda: {
@@ -49,6 +49,8 @@ class Job(Base):
     jd_parsed = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_now)
     closed_at = Column(DateTime(timezone=True), nullable=True)
+    hired_at = Column(DateTime(timezone=True), nullable=True)
+    hiring_summary = Column(JSON, nullable=True)  # {selected_count: int, notes: str}
 
     creator = relationship("User", back_populates="jobs", foreign_keys=[created_by])
     applications = relationship("Application", back_populates="job")
@@ -63,8 +65,8 @@ class Application(Base):
     )
 
     id = Column(String, primary_key=True, default=_uuid)
-    job_id = Column(String, ForeignKey("jobs.id"), nullable=False)
-    applicant_id = Column(String, ForeignKey("users.id"), nullable=False)
+    job_id = Column(String, ForeignKey("jobs.id"), nullable=False, index=True)
+    applicant_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
     resume_filename = Column(String, nullable=False)
     resume_text = Column(Text, nullable=True)
     cover_note = Column(Text, default="")
@@ -108,11 +110,13 @@ class OutboundCampaign(Base):
     id = Column(String, primary_key=True, default=_uuid)
     job_id = Column(String, ForeignKey("jobs.id"), nullable=False)
     created_by = Column(String, ForeignKey("users.id"), nullable=False)
-    status = Column(String, default="running")  # running | complete | paused
+    status = Column(String, default="running")  # running | complete | paused | error
     github_search_signals = Column(JSON, default=list)
     total_found = Column(Integer, default=0)
     total_contacted = Column(Integer, default=0)
+    run_number = Column(Integer, default=1)
     created_at = Column(DateTime(timezone=True), default=_now)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
 
     job = relationship("Job", back_populates="campaigns")
     candidates = relationship("OutboundCandidate", back_populates="campaign")
@@ -122,7 +126,7 @@ class OutboundCandidate(Base):
     __tablename__ = "outbound_candidates"
 
     id = Column(String, primary_key=True, default=_uuid)
-    campaign_id = Column(String, ForeignKey("outbound_campaigns.id"), nullable=False)
+    campaign_id = Column(String, ForeignKey("outbound_campaigns.id"), nullable=False, index=True)
     github_username = Column(String, nullable=False)
     github_url = Column(String, nullable=False)
     name = Column(String, nullable=True)
@@ -166,7 +170,7 @@ class SystemLog(Base):
     latency_ms = Column(Integer, nullable=False, default=0)
     status = Column(String, nullable=False)  # success | error
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=_now)
+    created_at = Column(DateTime(timezone=True), default=_now, index=True)
 
     job = relationship("Job", back_populates="logs")
     application = relationship("Application", back_populates="logs")

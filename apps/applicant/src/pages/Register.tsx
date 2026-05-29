@@ -23,8 +23,8 @@ export default function Register() {
 
     setLoading(true)
     try {
-      const { data } = await api.post('/api/auth/register', { name, email, password })
-      setAuth(data.access_token, { id: data.id, email, name, role: 'applicant' })
+      const { data } = await api.post('/auth/register', { name, email, password })
+      setAuth(data.access_token, { id: data.user_id, email, name, role: 'applicant' })
 
       const redirect = sessionStorage.getItem('or_redirect')
       if (redirect) {

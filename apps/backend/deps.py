@@ -1,4 +1,5 @@
-from fastapi import Depends, HTTPException, status
+from typing import Optional
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from database import get_db
@@ -6,6 +7,7 @@ from models.models import User
 from services.auth_service import decode_token
 
 bearer = HTTPBearer()
+bearer_optional = HTTPBearer(auto_error=False)
 
 
 def get_current_user(
@@ -20,6 +22,19 @@ def get_current_user(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user
+
+
+def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_optional),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """Returns the authenticated user or None for unauthenticated requests."""
+    if not credentials:
+        return None
+    payload = decode_token(credentials.credentials)
+    if not payload:
+        return None
+    return db.query(User).filter(User.id == payload["sub"]).first()
 
 
 def require_role(*roles: str):

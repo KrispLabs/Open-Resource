@@ -539,8 +539,9 @@ class TestPhase4_Security:
         )
         assert r.status_code == 403
 
-    def test_unauthenticated_hr_jobs_route_rejected(self, client):
-        r = client.get("/jobs/hr/jobs")
+    def test_unauthenticated_score_trigger_rejected(self, client):
+        """Scoring trigger requires HR auth — GET /jobs/{id}/stream without token should be rejected."""
+        r = client.get("/jobs/nonexistent-id/stream")
         assert r.status_code in NO_AUTH
 
     def test_password_hash_not_in_login_response(self, client):
@@ -551,10 +552,9 @@ class TestPhase4_Security:
 
     def test_protected_routes_require_bearer_token(self, client):
         routes = [
-            ("GET", "/jobs"),
-            ("GET", "/jobs/hr/jobs"),
             ("GET", "/api/dev/stats"),
             ("GET", "/api/providers"),
+            ("POST", "/jobs"),
         ]
         for method, path in routes:
             r = client.request(method, path)

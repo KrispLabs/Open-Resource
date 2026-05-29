@@ -8,7 +8,7 @@ export function useJobs() {
     queryKey: ['jobs'],
     queryFn: async () => {
       if (USE_MOCK) return mockJobs
-      const { data } = await api.get<Job[]>('/api/jobs')
+      const { data } = await api.get<Job[]>('/jobs')
       return data
     },
   })
@@ -24,7 +24,7 @@ export function useJob(id: string | undefined) {
         if (!job) throw new Error('Job not found')
         return job
       }
-      const { data } = await api.get<Job>(`/api/jobs/${id}`)
+      const { data } = await api.get<Job>(`/jobs/${id}`)
       return data
     },
   })

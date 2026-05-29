@@ -1,6 +1,6 @@
 from pydantic import BaseModel, field_validator
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 
 
 class ScoringWeightsSchema(BaseModel):
@@ -43,12 +43,30 @@ class JobCreateRequest(BaseModel):
         return v
 
 
+class ArchiveJobRequest(BaseModel):
+    pass
+
+
+class HireJobRequest(BaseModel):
+    selected_count: int
+    notes: str = ""
+
+
+class ReopenJobRequest(BaseModel):
+    reset_scoring: bool = False
+
+
+class MoveToInterviewingRequest(BaseModel):
+    pass
+
+
 class JobUpdateRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     location: Optional[str] = None
     job_type: Optional[str] = None
     application_deadline: Optional[datetime] = None
+    shortlist_cutoff: Optional[int] = None
 
 
 class WeightsUpdateRequest(BaseModel):
@@ -82,6 +100,8 @@ class JobResponse(BaseModel):
     jd_parsed: dict | None
     created_at: datetime
     closed_at: datetime | None
+    hired_at: datetime | None = None
+    hiring_summary: Any = None
     application_count: int = 0
 
 
@@ -95,4 +115,5 @@ class JobListResponse(BaseModel):
     status: str
     application_deadline: datetime | None
     created_at: datetime
+    hired_at: datetime | None = None
     application_count: int = 0

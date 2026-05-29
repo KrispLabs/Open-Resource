@@ -102,7 +102,10 @@ async def search_candidates_serp(
         inner = _json.loads(raw_body) if isinstance(raw_body, str) else raw_body
         organic: list[dict] = inner.get("organic", [])
 
-    except (httpx.HTTPStatusError, ValueError, _json.JSONDecodeError):
+    except (ValueError, httpx.HTTPStatusError) as exc:
+        # Propagate auth/zone errors so the caller can set campaign status to error
+        raise
+    except _json.JSONDecodeError:
         return []
 
     candidates: list[dict] = []

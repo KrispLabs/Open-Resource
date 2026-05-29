@@ -1,8 +1,19 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { Loader2, Sparkles } from 'lucide-react'
 import { useToast } from '../components/Toast'
+
+function extractErrorMsg(err: unknown, fallback: string): string {
+  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+  if (typeof detail === 'string' && detail.length > 0) return detail
+  if (Array.isArray(detail)) {
+    const first = detail[0] as { msg?: string; message?: string } | undefined
+    return first?.msg ?? first?.message ?? fallback
+  }
+  return fallback
+}
 
 const inputClass = 'w-full px-3 py-2 rounded text-sm border outline-none'
 const inputStyle: React.CSSProperties = {
@@ -20,6 +31,7 @@ const labelStyle: React.CSSProperties = {
 
 export default function JobCreate() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { showToast } = useToast()
   const [form, setForm] = useState({
     title: '',
@@ -49,6 +61,7 @@ export default function JobCreate() {
       const payload: Record<string, unknown> = { ...form }
       if (!form.application_deadline) delete payload.application_deadline
       const { data: job } = await api.post('/jobs', payload)
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
 
       // Immediately trigger JD analysis
       setAnalyzing(true)
@@ -59,7 +72,7 @@ export default function JobCreate() {
       }
       navigate(`/jobs/${job.id}/weights`)
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to create job'
+      const msg = extractErrorMsg(err, 'Failed to create job')
       setError(msg)
       showToast(msg, 'error')
     } finally {

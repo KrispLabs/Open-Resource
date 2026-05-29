@@ -16,8 +16,8 @@ export default function Login() {
     setError('')
     setLoading(true)
     try {
-      const { data: tokenData } = await api.post('/api/auth/login', { email, password })
-      const { data: userData } = await api.get('/api/auth/me', {
+      const { data: tokenData } = await api.post('/auth/login', { email, password })
+      const { data: userData } = await api.get('/auth/me', {
         headers: { Authorization: `Bearer ${tokenData.access_token}` },
       })
       setAuth(tokenData.access_token, userData)

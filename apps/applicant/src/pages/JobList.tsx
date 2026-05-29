@@ -7,9 +7,13 @@ import { useAuthStore } from '../store/auth'
 import { VerdictBadge } from '../components/Atoms'
 import { SkeletonJobCards, EmptyState, EMPTY_STATES } from '../components/Skeleton'
 
-function DeadlineTag({ deadline, status }: { deadline: string; status: string }) {
+function DeadlineTag({ deadline, status }: { deadline: string | null; status: string }) {
   if (status !== 'active') {
     return <span className="badge badge-neutral">Applications Closed</span>
+  }
+
+  if (!deadline) {
+    return <span className="deadline--ok">Open</span>
   }
 
   const daysLeft = Math.ceil(

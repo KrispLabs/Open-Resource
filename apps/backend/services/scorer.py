@@ -90,7 +90,7 @@ async def score_candidate(
         write_log(
             db,
             event_type="candidate_scoring",
-            api_provider="claude",
+            api_provider="featherless",
             latency_ms=latency_ms,
             status="error",
             job_id=application.job_id,
@@ -111,12 +111,22 @@ async def score_candidate(
         w_communication=scoring_weights.get("communication", 7),
     )
 
+    featherless_cfg = provider_manager.get("featherless")
+    api_key = featherless_cfg.get("api_key") or settings.featherlessai_api_key
+    model = featherless_cfg.get("model") or "meta-llama/Meta-Llama-3.1-8B-Instruct"
+
+    if not api_key:
+        raise ValueError(
+            "Featherless API key not configured. Set FEATHERLESSAI_API_KEY in .env "
+            "or configure via /api/providers/configure."
+        )
+
     headers = {
-        "Authorization": f"Bearer {provider_manager.get('featherless').get('api_key', settings.featherlessai_api_key)}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        "model": model,
         "messages": [
             {"role": "system", "content": SCORE_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
@@ -157,7 +167,7 @@ async def score_candidate(
     write_log(
         db,
         event_type="candidate_scoring",
-        api_provider="claude",
+        api_provider="featherless",
         latency_ms=latency_ms,
         status="success",
         job_id=application.job_id,

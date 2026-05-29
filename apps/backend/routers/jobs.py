@@ -1,12 +1,15 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import get_db
-from models.models import Job, Application, User
+from models.models import Job, Application, CandidateScore, User
 from schemas.job import (
     JobCreateRequest, JobUpdateRequest, WeightsUpdateRequest,
     JobResponse, JobListResponse,
+    ArchiveJobRequest, HireJobRequest, ReopenJobRequest, MoveToInterviewingRequest,
 )
-from deps import get_current_user, require_hr
+from deps import get_current_user, get_optional_user, require_hr
 from services.jd_analyzer import analyze_jd
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -26,35 +29,24 @@ def _job_to_list_response(job: Job, db: Session) -> JobListResponse:
     return data
 
 
-# ── HR: list own jobs (explicit alias) ───────────────────────────────────────
-
-@router.get("/hr/jobs", response_model=list[JobListResponse])
-def list_hr_jobs(
-    status: str | None = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_hr),
-):
-    q = db.query(Job).filter(Job.created_by == current_user.id)
-    if status:
-        q = q.filter(Job.status == status)
-    jobs = q.order_by(Job.created_at.desc()).all()
-    return [_job_to_list_response(j, db) for j in jobs]
-
-
 # ── List jobs ─────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[JobListResponse])
 def list_jobs(
     status: str | None = None,
+    include_archived: bool = False,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user=Depends(get_optional_user),
 ):
     q = db.query(Job)
-    if current_user.role == "hr":
-        # HR only sees their own jobs
+    if current_user is None:
+        # Unauthenticated — only active jobs
+        q = q.filter(Job.status == "active")
+    elif current_user.role == "hr":
         q = q.filter(Job.created_by == current_user.id)
+        if not include_archived:
+            q = q.filter(Job.status != "archived")
     elif current_user.role == "applicant":
-        # Applicants only see active jobs
         q = q.filter(Job.status == "active")
     if status:
         q = q.filter(Job.status == status)
@@ -91,14 +83,17 @@ def create_job(
 def get_job(
     job_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user=Depends(get_optional_user),
 ):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if current_user.role == "hr" and job.created_by != current_user.id:
+    if current_user is None:
+        if job.status != "active":
+            raise HTTPException(status_code=404, detail="Job not found")
+    elif current_user.role == "hr" and job.created_by != current_user.id:
         raise HTTPException(status_code=403, detail="Not your job")
-    if current_user.role == "applicant" and job.status != "active":
+    elif current_user.role == "applicant" and job.status != "active":
         raise HTTPException(status_code=403, detail="Job is not available")
     return _job_to_response(job, db)
 
@@ -142,10 +137,13 @@ def update_job(
         raise HTTPException(status_code=404, detail="Job not found")
     if job.created_by != current_user.id:
         raise HTTPException(status_code=403, detail="Not your job")
-    if job.status not in ("draft",):
+    updates = body.model_dump(exclude_none=True)
+
+    # shortlist_cutoff can be updated at any job status
+    if set(updates.keys()) - {"shortlist_cutoff"} and job.status not in ("draft",):
         raise HTTPException(status_code=400, detail="Cannot edit a published or closed job")
 
-    for field, value in body.model_dump(exclude_none=True).items():
+    for field, value in updates.items():
         setattr(job, field, value)
     db.commit()
     db.refresh(job)
@@ -219,6 +217,122 @@ def update_weights(
         raise HTTPException(status_code=403, detail="Not your job")
 
     job.scoring_weights = body.scoring_weights.model_dump()
+    db.commit()
+    db.refresh(job)
+    return _job_to_response(job, db)
+
+
+# ── Archive job ────────────────────────────────────────────────────────────────
+
+@router.post("/{job_id}/archive", response_model=JobResponse)
+def archive_job(
+    job_id: str,
+    body: ArchiveJobRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_hr),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your job")
+    if job.status == "archived":
+        raise HTTPException(status_code=400, detail="Job is already archived")
+    if job.status == "active":
+        raise HTTPException(status_code=400, detail="Close applications before archiving")
+
+    job.status = "archived"
+    db.commit()
+    db.refresh(job)
+    return _job_to_response(job, db)
+
+
+# ── Mark job as hired ──────────────────────────────────────────────────────────
+
+@router.post("/{job_id}/hire", response_model=JobResponse)
+def hire_job(
+    job_id: str,
+    body: HireJobRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_hr),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your job")
+    if job.status not in ("closed", "sourcing", "interviewing"):
+        raise HTTPException(
+            status_code=400,
+            detail="Job must be closed, sourcing, or in interviewing stage to mark as hired",
+        )
+
+    job.status = "hired"
+    job.hired_at = datetime.now(timezone.utc)
+    job.hiring_summary = {"selected_count": body.selected_count, "notes": body.notes}
+    db.commit()
+    db.refresh(job)
+    return _job_to_response(job, db)
+
+
+# ── Reopen job ─────────────────────────────────────────────────────────────────
+
+@router.post("/{job_id}/reopen", response_model=JobResponse)
+def reopen_job(
+    job_id: str,
+    body: ReopenJobRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_hr),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your job")
+    if job.status not in ("archived", "hired"):
+        raise HTTPException(status_code=400, detail="Only archived or hired jobs can be reopened")
+
+    job.status = "draft"
+    job.hired_at = None
+    job.hiring_summary = None
+
+    if body.reset_scoring:
+        applications = db.query(Application).filter(Application.job_id == job_id).all()
+        for app in applications:
+            score = db.query(CandidateScore).filter(
+                CandidateScore.application_id == app.id
+            ).first()
+            if score:
+                db.delete(score)
+            app.status = "pending"
+            app.rank = None
+
+    db.commit()
+    db.refresh(job)
+    return _job_to_response(job, db)
+
+
+# ── Move job to interviewing ───────────────────────────────────────────────────
+
+@router.post("/{job_id}/interviewing", response_model=JobResponse)
+def move_to_interviewing(
+    job_id: str,
+    body: MoveToInterviewingRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_hr),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your job")
+    if job.status not in ("closed", "sourcing"):
+        raise HTTPException(
+            status_code=400,
+            detail="Job must be closed or sourcing to move to interviewing",
+        )
+
+    job.status = "interviewing"
     db.commit()
     db.refresh(job)
     return _job_to_response(job, db)

@@ -20,7 +20,7 @@ export default function Campaigns() {
 
   const { data: campaigns = [], isLoading, error } = useQuery<OutboundCampaign[]>({
     queryKey: ['campaigns'],
-    queryFn: () => api.get<OutboundCampaign[]>('/campaigns').then((r) => r.data),
+    queryFn: () => api.get<OutboundCampaign[]>('/api/campaigns').then((r) => r.data),
   })
 
   if (isLoading) {

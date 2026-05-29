@@ -111,7 +111,7 @@ export default function Apply() {
       form.append('resume', file)
       form.append('cover_note', coverNote)
 
-      await api.post(`/api/jobs/${jobId}/apply`, form, {
+      await api.post(`/jobs/${jobId}/apply`, form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
 

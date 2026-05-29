@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Search, ChevronRight, Trophy, Users, TrendingUp, Clock } from 'lucide-react'
 import type { Application, Verdict } from '@open-resource/shared'
 import { api } from '../api/client'
@@ -15,6 +15,7 @@ export default function Rankings() {
   const [filter, setFilter] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
+  const queryClient = useQueryClient()
   const { candidates, setCandidates, updateCandidate } = useRankingsStore()
 
   const { data, isLoading, error } = useQuery<Application[]>({
@@ -62,10 +63,13 @@ export default function Rankings() {
   ) => {
     updateCandidate(appId, {
       status,
-      candidate_scores: selectedCandidate?.candidate_scores
-        ? { ...selectedCandidate.candidate_scores, verdict }
-        : undefined,
+      ...(selectedCandidate?.candidate_scores && {
+        candidate_scores: { ...selectedCandidate.candidate_scores, verdict },
+      }),
     })
+    // Invalidate so Shortlist and any sibling view of this job's applications
+    // reflect the verdict change on their next render (staleTime = 30s, no windowFocus refetch).
+    queryClient.invalidateQueries({ queryKey: ['applications', id] })
   }
 
   return (

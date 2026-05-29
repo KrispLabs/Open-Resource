@@ -8,6 +8,16 @@ import { ScoreRing, VerdictBadge } from '../components/Atoms'
 import { EmptyState, EMPTY_STATES } from '../components/Skeleton'
 import { useToast } from '../components/Toast'
 
+function extractErrorMsg(err: unknown, fallback: string): string {
+  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+  if (typeof detail === 'string' && detail.length > 0) return detail
+  if (Array.isArray(detail)) {
+    const first = detail[0] as { msg?: string; message?: string } | undefined
+    return first?.msg ?? first?.message ?? fallback
+  }
+  return fallback
+}
+
 function exportCsv(candidates: Application[]) {
   const header = ['Rank', 'Name', 'Score', 'Verdict', 'Matched Skills']
   const rows = candidates.map((c) => [
@@ -59,14 +69,13 @@ export default function Shortlist() {
       queryClient.setQueryData<Application[]>(['applications', id], (prev) =>
         prev
           ? prev.map((a) =>
-              a.id === appId ? { ...a, status: 'reviewing' as Application['status'] } : a
+              a.id === appId ? { ...a, status: 'not_shortlisted' as Application['status'] } : a
             )
           : prev
       )
+      queryClient.invalidateQueries({ queryKey: ['applications', id] })
     } catch (err: unknown) {
-      const msg =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
-        'Failed to remove candidate'
+      const msg = extractErrorMsg(err, 'Failed to remove candidate')
       setRemoveError(msg)
       showToast(msg, 'error')
     } finally {

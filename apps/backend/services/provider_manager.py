@@ -8,12 +8,15 @@ import os
 import json
 import base64
 import hashlib
+import logging
 import httpx
 from datetime import datetime, timezone
 from typing import Callable
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # ── Provider Registry ─────────────────────────────────────────────────────────
@@ -130,17 +133,27 @@ async def _validate_featherless(config: dict) -> dict:
 
 
 async def _validate_brightdata(config: dict) -> dict:
+    import json as _json
     ts = datetime.now(timezone.utc).isoformat()
+    api_key = config.get("api_key", "")
+    serp_zone = config.get("serp_zone", "serp_api2")
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                "https://api.brightdata.com/datasets/v3",
-                headers={"Authorization": f"Bearer {config.get('api_key', '')}"},
+            resp = await client.post(
+                "https://api.brightdata.com/request",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"zone": serp_zone, "url": "https://www.google.com/search?q=test", "format": "json"},
             )
-        # 200 or 422 both confirm auth succeeded
-        healthy = resp.status_code in (200, 422)
+        resp.raise_for_status()
+        outer = resp.json()
+        # outer.status_code 407 means zone not found; 200 means OK
+        inner_status = outer.get("status_code", 0)
+        if inner_status == 407:
+            msg = outer.get("headers", {}).get("x-brd-error", f"Zone '{serp_zone}' not found")
+            return {"healthy": False, "last_checked": ts, "message": str(msg)}
+        healthy = inner_status == 200
         return {"healthy": healthy, "last_checked": ts,
-                "message": "OK" if healthy else f"HTTP {resp.status_code}"}
+                "message": "OK" if healthy else f"Unexpected status {inner_status}"}
     except Exception as exc:
         return {"healthy": False, "last_checked": ts, "message": str(exc)}
 
@@ -202,7 +215,27 @@ class ProviderManager:
             self._cache[provider_id] = config
             self._cache_valid.add(provider_id)
             return config
-        except Exception:
+        except Exception as exc:
+            logger.error(
+                "Provider '%s' credential decrypt failed: %s. "
+                "This usually means SERVER_SECRET_KEY was changed. "
+                "Re-configure via /api/providers/configure.",
+                provider_id, exc,
+            )
+            # Mark the row so the admin UI shows the real state
+            try:
+                from models.provider_config import ProviderConfig as _PC
+                _row = db.query(_PC).filter_by(provider_id=provider_id).first()
+                if _row and _row.status not in ("decrypt_failed", "unconfigured"):
+                    _row.status = "decrypt_failed"
+                    _row.health = {
+                        "healthy": False,
+                        "last_checked": datetime.now(timezone.utc).isoformat(),
+                        "message": "Credential decryption failed — re-configure provider",
+                    }
+                    db.commit()
+            except Exception:
+                pass
             return {}
         finally:
             db.close()
@@ -235,7 +268,10 @@ class ProviderManager:
         try:
             from models.provider_config import ProviderConfig
             row = db.query(ProviderConfig).filter_by(provider_id=provider_id).first()
-            return bool(row and row.encrypted_config and row.status != "unconfigured")
+            return bool(
+                row and row.encrypted_config
+                and row.status not in ("unconfigured", "decrypt_failed")
+            )
         except Exception:
             return False
         finally:
@@ -322,17 +358,43 @@ provider_manager = ProviderManager()
 
 # ── Env migration ─────────────────────────────────────────────────────────────
 
+def _missing_required_fields(provider_def: dict) -> list[str]:
+    """Return list of required secret field keys that are absent from the stored config."""
+    pid = provider_def["id"]
+    try:
+        config = provider_manager.get(pid)
+    except Exception:
+        config = {}
+    return [
+        f["key"]
+        for f in provider_def["fields"]
+        if f["type"] == "secret" and f.get("required") and not config.get(f["key"])
+    ]
+
+
 def migrate_env_to_db() -> None:
     """
     Called once at startup. Reads credentials from environment variables,
-    encrypts them, and persists to DB. Skips any already-configured provider.
-    After migration, services use provider_manager.get() exclusively.
+    encrypts them, and persists to DB.
+
+    Re-migration triggers when:
+    - Provider not yet in DB (first run)
+    - Provider row exists but required secret fields are missing (e.g., api_key empty)
+      AND the corresponding env vars are now set — so adding a key to .env after a
+      prior empty-migration automatically takes effect on the next restart.
     """
     for p in PROVIDER_REGISTRY:
         pid = p["id"]
-        if provider_manager.is_configured(pid):
+        missing = _missing_required_fields(p)
+
+        if provider_manager.is_configured(pid) and not missing:
+            logger.info(
+                "Provider '%s' already configured in DB — skipping env migration. "
+                "Use /api/providers/rotate to update credentials.", pid
+            )
             continue
 
+        # Build values from env vars
         values: dict[str, str] = {}
         for env_var, field_key in p.get("env_map", {}).items():
             val = os.environ.get(env_var, "").strip()
@@ -344,5 +406,45 @@ def migrate_env_to_db() -> None:
             if field["type"] != "secret" and field.get("default") and field["key"] not in values:
                 values[field["key"]] = field["default"]
 
-        if values:
-            provider_manager.set(pid, values)
+        if not values:
+            continue
+
+        # Only re-migrate if env now supplies the missing required fields
+        if missing:
+            can_fill = all(
+                any(values.get(f["key"]) for f in p["fields"] if f["key"] == mk)
+                for mk in missing
+            )
+            if not can_fill:
+                logger.warning(
+                    "Provider '%s' is configured in DB but missing required field(s) %s. "
+                    "Set %s in your .env and restart to activate.",
+                    pid, missing,
+                    [k for k, fk in p.get("env_map", {}).items() if fk in missing],
+                )
+                continue
+            logger.info(
+                "Provider '%s' has missing required fields %s — re-migrating from env.", pid, missing
+            )
+            provider_manager._cache_valid.discard(pid)  # invalidate stale cache
+
+        provider_manager.set(pid, values)
+
+
+def check_required_providers() -> None:
+    """
+    Log actionable warnings for any required provider missing its credentials.
+    Call after migrate_env_to_db() at startup.
+    """
+    for p in PROVIDER_REGISTRY:
+        if not p.get("required"):
+            continue
+        missing = _missing_required_fields(p)
+        if missing:
+            env_vars = [k for k, fk in p.get("env_map", {}).items() if fk in missing]
+            logger.error(
+                "REQUIRED provider '%s' is missing field(s) %s. "
+                "AI features WILL FAIL until you set %s in your .env and restart. "
+                "Or configure via POST /api/providers/configure.",
+                p["name"], missing, env_vars,
+            )

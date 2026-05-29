@@ -1,9 +1,19 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { Loader2 } from 'lucide-react'
 import { useToast } from '../components/Toast'
+
+function extractErrorMsg(err: unknown, fallback: string): string {
+  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+  if (typeof detail === 'string' && detail.length > 0) return detail
+  if (Array.isArray(detail)) {
+    const first = detail[0] as { msg?: string; message?: string } | undefined
+    return first?.msg ?? first?.message ?? fallback
+  }
+  return fallback
+}
 
 const CATEGORIES = [
   { key: 'technical_skills', label: 'Technical Skills' },
@@ -68,6 +78,7 @@ function redistribute(weights: Weights, changedKey: WeightKey, newValue: number)
 export default function WeightEditor() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { showToast } = useToast()
   const [weights, setWeights] = useState<Weights>(DEFAULT_WEIGHTS)
   const [aiWeights, setAiWeights] = useState<Weights | null>(null)
@@ -101,10 +112,12 @@ export default function WeightEditor() {
     setError('')
     try {
       await api.post(`/jobs/${id}/publish`, { scoring_weights: weights })
+      queryClient.invalidateQueries({ queryKey: ['job', id] })
+      queryClient.invalidateQueries({ queryKey: ['jobs'] })
       showToast('Job published successfully!', 'success')
       navigate(`/jobs/${id}`)
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to publish job'
+      const msg = extractErrorMsg(err, 'Failed to publish job')
       setError(msg)
       showToast(msg, 'error')
     } finally {

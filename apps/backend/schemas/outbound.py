@@ -17,7 +17,9 @@ class CampaignResponse(BaseModel):
     github_search_signals: Any = None
     total_found: int
     total_contacted: int
+    run_number: int = 1
     created_at: datetime
+    completed_at: datetime | None = None
 
 
 class OutboundCandidateResponse(BaseModel):
