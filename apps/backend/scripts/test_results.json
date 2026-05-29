@@ -1,0 +1,31 @@
+{
+  "results": {
+    "test1_profile": {
+      "login": "torvalds",
+      "name": "Linus Torvalds",
+      "bio": null,
+      "location": "Portland, OR",
+      "followers": 305000,
+      "following": 0,
+      "public_repos": 11
+    },
+    "test2_repo": {
+      "repo": "fastapi",
+      "stars": 98600,
+      "forks": 9300,
+      "language": "Python",
+      "description": "FastAPI framework, high performance, easy to learn, fast to code, ready for production"
+    }
+  },
+  "errors": {
+    "test3_search": "Page.goto: Protocol error (Page.navigate): Requested URL (https://github.com/search?q=fastapi&type=users) is restricted in accordance with robots.txt. Ask your account manager to get full access for targeting this site (brob)\nCall log:\n  - navigating to \"https://github.com/search?q=fastapi&type=users\", waiting until \"domcontentloaded\"\n"
+  },
+  "latencies_ms": {
+    "connect_ms": 1884,
+    "test1_ms": 40448,
+    "test2_ms": 29659,
+    "test3_ms": 98
+  },
+  "pass_count": 2,
+  "fail_count": 1
+}
