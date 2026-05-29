@@ -1,0 +1,13 @@
+{
+  "name": "open-resource",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter backend dev\" \"pnpm --filter hr dev\" \"pnpm --filter applicant dev\" \"pnpm --filter dev-portal dev\"",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

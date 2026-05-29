@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend — lint + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Import check
+        run: python -c "import main"
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+        env:
+          DATABASE_URL: sqlite:///./test_ci.db
+          JWT_SECRET: ci-test-secret-not-for-prod
+          SERVER_SECRET_KEY: ci-test-server-secret-32chars!!
+          APP_ENV: test
+
+  hr-portal:
+    name: HR Portal — typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/hr
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+      - name: Install
+        run: pnpm install
+        working-directory: .
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+      - name: Build
+        run: pnpm build
+
+  applicant-portal:
+    name: Applicant Portal — typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/applicant
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+      - name: Install
+        run: pnpm install
+        working-directory: .
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+      - name: Build
+        run: pnpm build
+
+  dev-portal:
+    name: Dev Portal — typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+      - name: Install
+        run: pnpm install
+        working-directory: .
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+      - name: Build
+        run: pnpm build
