@@ -88,9 +88,21 @@ async def score_and_write_outreach(
         return data["choices"][0]["message"]["content"].strip()
 
     def _parse_content(content: str) -> dict:
-        cleaned = re.sub(r"^```(?:json)?\s*", "", content)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-        return json.loads(cleaned)
+        cleaned = re.sub(r"^```(?:json)?\s*\n?", "", content, flags=re.MULTILINE)
+        cleaned = re.sub(r"\n?```\s*$", "", cleaned, flags=re.MULTILINE)
+        cleaned = cleaned.strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+        # Fallback: first { to last }
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and start < end:
+            return json.loads(cleaned[start : end + 1])
+        raise json.JSONDecodeError(
+            f"Could not extract JSON from outreach response: {content[:200]!r}", content, 0
+        )
 
     # First attempt
     content = await _call_api()

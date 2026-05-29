@@ -1,4 +1,5 @@
-import { Component, type ReactNode } from 'react'
+import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { captureReactError } from '@open-resource/shared'
 
 interface Props { children: ReactNode }
 interface State { hasError: boolean; error?: Error }
@@ -8,6 +9,16 @@ export class ErrorBoundary extends Component<Props, State> {
 
   static getDerivedStateFromError(error: Error): State {
     return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    captureReactError({
+      message: error.message,
+      error_stack: error.stack,
+      component_stack: info.componentStack ?? undefined,
+      route: window.location.pathname,
+      timestamp: new Date().toISOString(),
+    })
   }
 
   render() {

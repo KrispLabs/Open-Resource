@@ -1,5 +1,8 @@
+import json
+import logging
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import get_db
@@ -11,6 +14,10 @@ from schemas.job import (
 )
 from deps import get_current_user, get_optional_user, require_hr
 from services.jd_analyzer import analyze_jd
+from services.provider_manager import provider_manager
+from config import settings
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -164,10 +171,58 @@ async def analyze_job(
     if job.created_by != current_user.id:
         raise HTTPException(status_code=403, detail="Not your job")
 
+    # Pre-flight: confirm Featherless is configured before entering the AI pipeline
+    featherless_key = (
+        provider_manager.get("featherless").get("api_key")
+        or settings.featherlessai_api_key
+    )
+    if not featherless_key:
+        _log.error(
+            "JD analyze called for job %s but FEATHERLESSAI_API_KEY is not configured",
+            job_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "AI provider not configured — set FEATHERLESSAI_API_KEY in .env and restart, "
+                "or configure via the Dev portal (Settings → Providers)."
+            ),
+        )
+
     try:
         parsed = await analyze_jd(db, job.id, job.description, current_user.id)
+    except httpx.TimeoutException:
+        _log.error("JD analysis timeout for job %s", job_id)
+        raise HTTPException(
+            status_code=504,
+            detail="AI provider timed out (60 s limit). Check your Featherless quota and retry.",
+        )
+    except httpx.HTTPStatusError as exc:
+        _log.error(
+            "JD analysis HTTP error for job %s: status=%d body=%r",
+            job_id, exc.response.status_code, exc.response.text[:300],
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"AI provider returned HTTP {exc.response.status_code}: "
+                f"{exc.response.text[:300]}"
+            ),
+        )
+    except json.JSONDecodeError as exc:
+        _log.error("JD analysis JSON parse error for job %s: %s", job_id, exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI response was not valid JSON: {exc}",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}")
+        _log.exception("Unexpected error during JD analysis for job %s", job_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI analysis failed ({type(exc).__name__}): {exc}",
+        )
 
     job.jd_parsed = parsed
     # Pre-fill scoring_weights from AI proposal

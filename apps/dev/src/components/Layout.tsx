@@ -4,6 +4,7 @@ import {
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 import { ThemeToggle } from './ThemeToggle'
+import { DiagnosticsExport } from './DiagnosticsExport'
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Overview' },
@@ -127,6 +128,7 @@ export function Layout() {
             <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
               {user?.email}
             </span>
+            <DiagnosticsExport />
             <ThemeToggle />
           </div>
         </header>
