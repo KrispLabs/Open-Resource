@@ -3,7 +3,23 @@
 **Date:** 2026-05-30
 **Branch:** `outbound-v3-rebuild`
 **Target:** Frontends → Vercel · Backend → Render (free Docker)
-**Status:** ✅ Build-ready & configured · ⏳ Live deploy pending account auth (Vercel token + Render account)
+**Status:** ✅ **DEPLOYED & VERIFIED LIVE**
+
+## Live URLs
+
+| Surface | URL |
+|---------|-----|
+| HR portal | https://open-resource-hr.vercel.app |
+| Applicant portal | https://open-resource-applicant.vercel.app |
+| Admin (dev) portal | https://open-resource-admin.vercel.app |
+| Backend API | https://open-resource-api.onrender.com (`/health`, `/docs`) |
+
+Demo logins: HR `hr@openresource.com` / `demo1234` · Admin `admin@openresource.com` / `demo1234` · applicants self-register.
+
+Post-deploy verification (all ✅): production pages return 200 with correct titles;
+SPA deep-links (`/login`, `/jobs/:id/rankings`, `/dashboard`) return 200 (rewrite works);
+backend CORS returns `access-control-allow-origin` for each `*.vercel.app` origin;
+end-to-end `POST /auth/login` returns a JWT (`role: hr`).
 
 ---
 
