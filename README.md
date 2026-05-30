@@ -433,6 +433,28 @@ Check that the backend is running on `http://127.0.0.1:8000` and that `FRONTEND_
 
 Vite may automatically choose the next available frontend port. Update `FRONTEND_ORIGINS` if a frontend runs on a different port and the backend rejects browser requests.
 
+## Live Deployment
+
+The platform is deployed and publicly accessible.
+
+| Surface | URL |
+| --- | --- |
+| HR portal | https://open-resource-hr.vercel.app |
+| Applicant portal | https://open-resource-applicant.vercel.app |
+| Admin (dev) portal | https://open-resource-admin.vercel.app |
+| Backend API | https://open-resource-api.onrender.com |
+| API docs (interactive) | https://open-resource-api.onrender.com/docs |
+
+Demo accounts:
+
+| Role | Email | Password |
+| --- | --- | --- |
+| HR | hr@openresource.com | demo1234 |
+| Admin | admin@openresource.com | demo1234 |
+| Applicant | self-register via applicant portal | — |
+
+The three frontend SPAs are hosted on Vercel. The FastAPI backend runs on Render (free tier, Docker). See `DEPLOYMENT.md` for the full deployment guide including environment variable reference, CORS configuration, and free-tier caveats.
+
 ## Project Status
 
 This is an active product codebase. The architecture currently favors local-first development with SQLite, role-specific Vite frontends, and a FastAPI backend that can be extended toward production deployment with stronger secrets, managed storage, a managed database, and provider credential hardening.
