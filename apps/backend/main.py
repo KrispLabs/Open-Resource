@@ -104,7 +104,9 @@ app = FastAPI(title="Open Resource API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.frontend_origins.split(","),
+    allow_origins=[o.strip() for o in settings.frontend_origins.split(",") if o.strip()],
+    # Allow all Vercel production + preview deployments (preview URLs rotate per commit).
+    allow_origin_regex=settings.cors_origin_regex or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

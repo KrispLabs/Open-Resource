@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     dev_password: str = "demo1234"
     upload_dir: str = "uploads"
     frontend_origins: str = "http://localhost:5173,http://localhost:5174,http://localhost:5175"
+    # Regex of additional allowed CORS origins (e.g. rotating Vercel preview URLs).
+    # Empty string disables regex matching.
+    cors_origin_regex: str = r"https://.*\.vercel\.app"
     featherlessai_api_key: str = ""
     github_token: str = ""
     brightdata_api_key: str = ""  # Leave empty to fall back to GitHub REST API

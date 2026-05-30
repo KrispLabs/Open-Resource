@@ -1,0 +1,67 @@
+# Render Blueprint — Open Resource backend (FastAPI)
+# Deploy: push this file, then in Render dashboard → New → Blueprint → connect
+# github.com/KrispLabs/Open-Resource and select this file.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# NOTE (free tier): no persistent disk and the service spins down after ~15 min idle.
+# SQLite (hireai.db) and uploaded resumes reset on spin-down/redeploy. The DB
+# auto-recreates and re-seeds on boot, so the app always works — data just isn't
+# durable. For persistence without paying, point DATABASE_URL at a free Neon
+# Postgres instance (see DEPLOYMENT.md).
+
+services:
+  - type: web
+    name: open-resource-api
+    runtime: docker
+    repo: https://github.com/KrispLabs/Open-Resource
+    branch: outbound-v3-rebuild
+    rootDir: apps/backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    region: oregon
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # --- Runtime / secrets (generated or prompted; never committed) ---
+      - key: APP_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true          # Render generates a strong value once
+      - key: SERVER_SECRET_KEY
+        generateValue: true          # AES master key (SHA-256'd to 32 bytes)
+      - key: JWT_EXPIRE_DAYS
+        value: "7"
+
+      # --- Database & storage (ephemeral on free tier) ---
+      - key: DATABASE_URL
+        value: sqlite:///./hireai.db
+      - key: UPLOAD_DIR
+        value: uploads
+
+      # --- Seeded demo accounts ---
+      - key: HR_EMAIL
+        value: hr@openresource.com
+      - key: HR_PASSWORD
+        sync: false                  # set in dashboard (defaults to demo1234 if unset locally)
+      - key: DEV_EMAIL
+        value: admin@openresource.com
+      - key: DEV_PASSWORD
+        sync: false
+
+      # --- AI / sourcing provider keys (set in dashboard) ---
+      - key: FEATHERLESSAI_API_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: BRIGHTDATA_API_KEY
+        sync: false
+      - key: BRIGHTDATA_DATASET_ID
+        value: gd_m794s4jrlq1bvkfnt
+      - key: BRIGHTDATA_SERP_DATASET_ID
+        value: gd_l1kikjl71vu9n3bkf
+
+      # --- CORS: set to your Vercel production domains after the frontend deploy ---
+      # (Comma-separated. *.vercel.app preview URLs are already allowed via regex.)
+      - key: FRONTEND_ORIGINS
+        sync: false
